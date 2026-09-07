@@ -1,0 +1,39 @@
+# === Whitelist gitignore ===
+# Ignore everything by default, then un-ignore only what we track.
+
+# Ignore all files and directories
+*
+
+# Re-include directories so git can descend into them
+!*/
+
+# Track Rust source files
+!*.rs
+
+# Track Cargo manifests (workspace + crates) and lockfiles
+!Cargo.toml
+!Cargo.lock
+
+# Track config files
+!config.toml
+
+# Track documentation
+!*.md
+!*.txt
+
+# Track this gitignore
+!.gitignore
+
+# --- Always ignore build artifacts ---
+**/target/
+
+# --- OS / editor noise ---
+**/.DS_Store
+**/Thumbs.db
+**/.idea/
+**/.vscode/
+**/*.swp
+**/*~
+**/.fleet/
+**/__pycache__/
+**/.commandcode/

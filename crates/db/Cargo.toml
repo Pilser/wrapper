@@ -1,0 +1,19 @@
+[package]
+name = "db"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "db"
+path = "src/lib.rs"
+
+[dependencies]
+core = { path = "../core" }
+telemetry = { path = "../telemetry" }
+turso = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

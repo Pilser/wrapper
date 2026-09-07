@@ -1,0 +1,25 @@
+[package]
+name = "proxy"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "proxy"
+path = "src/lib.rs"
+
+[dependencies]
+core = { path = "../core" }
+telemetry = { path = "../telemetry" }
+auth = { path = "../auth" }
+db = { path = "../db" }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

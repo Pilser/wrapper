@@ -1,0 +1,54 @@
+[package]
+name = "wrapper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+api = { path = "crates/api" }
+core = { path = "crates/core" }
+telemetry = { path = "crates/telemetry" }
+turso = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+
+[workspace]
+members = [
+    ".",
+    "crates/core",
+    "crates/telemetry",
+    "crates/db",
+    "crates/network",
+    "crates/vm",
+    "crates/proxy",
+    "crates/auth",
+    "crates/supervisor_server",
+    "crates/admin",
+    "crates/plugin_host",
+    "crates/api",
+]
+resolver = "2"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
+tokio-tungstenite = "0.24"
+turso = "0.8.0-pre.8"
+libloading = "0.8"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"

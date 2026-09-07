@@ -1,0 +1,31 @@
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "api"
+path = "src/lib.rs"
+
+[dependencies]
+core = { path = "../core" }
+telemetry = { path = "../telemetry" }
+db = { path = "../db" }
+network = { path = "../network" }
+vm = { path = "../vm" }
+proxy = { path = "../proxy" }
+auth = { path = "../auth" }
+supervisor_server = { path = "../supervisor_server" }
+admin = { path = "../admin" }
+plugin_host = { path = "../plugin_host" }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

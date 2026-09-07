@@ -1,0 +1,23 @@
+[package]
+name = "admin"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "admin"
+path = "src/lib.rs"
+
+[dependencies]
+core = { path = "../core" }
+telemetry = { path = "../telemetry" }
+db = { path = "../db" }
+vm = { path = "../vm" }
+network = { path = "../network" }
+auth = { path = "../auth" }
+supervisor_server = { path = "../supervisor_server" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

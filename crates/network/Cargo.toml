@@ -1,0 +1,17 @@
+[package]
+name = "network"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "network"
+path = "src/lib.rs"
+
+[dependencies]
+core = { path = "../core" }
+telemetry = { path = "../telemetry" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

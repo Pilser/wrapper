@@ -1,0 +1,20 @@
+[package]
+name = "telemetry"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "telemetry"
+path = "src/lib.rs"
+
+[dependencies]
+core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+toml = "0.8"

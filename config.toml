@@ -1,0 +1,62 @@
+# Wrapper configuration — mirrors the CONFIGURATION section of ARCHITECTURE.txt.
+
+[wrapper]
+bind_address = "0.0.0.0"
+port = 8080
+
+[firecracker]
+binary_path = "~/.local/bin/firecracker"
+
+[network]
+ip_range = "172.16.0.0/12"
+gateway = "172.16.0.1"
+
+[database]
+global_path = "data/global.db"
+tenants_dir = "data/tenants"
+
+[supervisor_server]
+bind_address = "0.0.0.0"
+port = 9090
+heartbeat_timeout_seconds = 30
+
+[plugins]
+directory = "plugins"
+hot_reload = true
+
+[categories]
+config_path = "data/categories"
+
+[deployments]
+storage_path = "data/deployments"
+# Default TCP port supervisors listen on for deployment pushes.
+default_push_port = 8091
+
+[telemetry]
+enabled = true
+output = "both"
+
+[telemetry.disk]
+path = "/var/log/wrapper/telemetry"
+filename_pattern = "telemetry_{date}.json"
+buffer_size = 1000
+flush_interval_seconds = 5
+compress_old_files = true
+retention_days = 30
+
+[telemetry.broadcast]
+bind_address = "0.0.0.0"
+port = 8081
+protocol = "websocket"
+max_clients = 10
+events_per_second_per_client = 100
+auth_required = true
+
+[telemetry.metrics]
+enabled = true
+collection_interval_seconds = 10
+track_latency_percentiles = [50, 95, 99]
+
+[telemetry.filters]
+exclude_from_disk = ["metric.gauge", "metric.counter"]
+min_level = "info"

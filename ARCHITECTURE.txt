@@ -1,0 +1,1279 @@
+WRAPPER ARCHITECTURE
+Detailed Module Breakdown with Plugin-First Design
+===================================================
+
+
+OVERVIEW
+--------
+
+The wrapper is a Rust-based orchestrator that manages Firecracker microVMs
+for tenants. Every crate is designed plugin-first: plugins can access,
+extend, or override any functionality. Tenants belong to CATEGORIES
+(robotics, painting, music, staff, etc.) and each category gets a VM
+optimized for that domain. A comprehensive TELEMETRY system tracks every
+event, error, and latency for full system observability.
+
+
+WORKSPACE STRUCTURE
+-------------------
+
+wrapper/
+├── Cargo.toml
+├── crates/
+│   ├── core/
+│   ├── db/
+│   ├── vm/
+│   ├── network/
+│   ├── proxy/
+│   ├── auth/
+│   ├── supervisor_server/
+│   ├── admin/
+│   ├── telemetry/
+│   ├── plugin_host/
+│   └── api/
+├── src/
+├── plugins/
+└── config.toml
+
+
+================================================================================
+CRATE: telemetry
+================================================================================
+
+crates/telemetry/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── config/
+    │   ├── mod.rs
+    │   ├── settings.rs
+    │   └── load.rs
+    ├── event/
+    │   ├── mod.rs
+    │   ├── builder.rs
+    │   ├── emit.rs
+    │   ├── types.rs
+    │   └── level.rs
+    ├── models/
+    │   ├── mod.rs
+    │   ├── event.rs
+    │   ├── span.rs
+    │   ├── error.rs
+    │   ├── metric.rs
+    │   ├── request.rs
+    │   └── state.rs
+    ├── writer/
+    │   ├── mod.rs
+    │   ├── file.rs
+    │   ├── rotation.rs
+    │   ├── buffer.rs
+    │   ├── flush.rs
+    │   └── compress.rs
+    ├── broadcast/
+    │   ├── mod.rs
+    │   ├── server.rs
+    │   ├── client.rs
+    │   ├── filter.rs
+    │   └── throttle.rs
+    ├── metrics/
+    │   ├── mod.rs
+    │   ├── latency.rs
+    │   ├── counter.rs
+    │   ├── gauge.rs
+    │   ├── histogram.rs
+    │   └── aggregate.rs
+    ├── query/
+    │   ├── mod.rs
+    │   ├── search.rs
+    │   ├── filter.rs
+    │   └── export.rs
+    └── macros/
+        ├── mod.rs
+        ├── event.rs
+        ├── span.rs
+        └── timing.rs
+
+Plugin API:
+  - EventBuilder: create custom event types
+  - emit(): emit custom events from plugins
+  - FileWriter: configure file output
+  - BroadcastServer: subscribe to live telemetry stream
+  - Metrics: register custom metrics (counters, gauges, histograms)
+  - Hooks: OnEventEmitted, OnFileFlushed, OnBroadcastSent, OnMetricRecorded
+  - Plugins can emit custom telemetry events
+  - Plugins can register custom metrics
+  - Plugins can subscribe to telemetry streams
+
+
+================================================================================
+TELEMETRY EVENT STRUCTURE
+================================================================================
+
+Every event written to disk or broadcast follows this JSON structure:
+
+{
+  "id": "evt_abc123",
+  "timestamp": "2026-09-06T14:30:00.123456789Z",
+  "level": "info",
+  "type": "vm.boot.started",
+  "category": "vm",
+  "source": "vm::lifecycle::boot",
+  "tenant_id": "tenant_xyz",
+  "vm_id": "vm_001",
+  "session_id": "sess_abc",
+  "trace_id": "trace_123",
+  "span_id": "span_456",
+  "message": "VM boot started for tenant_xyz",
+  "data": {
+    "template": "robotics-template-v2",
+    "vcpu": 2,
+    "memory_mb": 2048
+  },
+  "tags": ["vm", "boot", "robotics"],
+  "tenant_category": "robotics"
+}
+
+Error event:
+
+{
+  "id": "evt_def456",
+  "timestamp": "2026-09-06T14:30:05.987654321Z",
+  "level": "error",
+  "type": "vm.boot.failed",
+  "category": "vm",
+  "source": "vm::lifecycle::boot",
+  "tenant_id": "tenant_xyz",
+  "vm_id": "vm_001",
+  "trace_id": "trace_123",
+  "message": "VM boot failed: insufficient memory",
+  "error": {
+    "kind": "ResourceExhausted",
+    "message": "insufficient memory",
+    "stack": "vm::lifecycle::boot -> firecracker::client -> ...",
+    "context": {
+      "available_mb": 1024,
+      "requested_mb": 2048
+    }
+  },
+  "tags": ["vm", "boot", "error"]
+}
+
+Span event (tracks operation duration):
+
+{
+  "id": "evt_ghi789",
+  "timestamp": "2026-09-06T14:30:05.000000000Z",
+  "level": "info",
+  "type": "span.completed",
+  "category": "performance",
+  "source": "proxy::websocket::handler",
+  "trace_id": "trace_123",
+  "span_id": "span_456",
+  "span_name": "websocket_message_roundtrip",
+  "message": "Operation completed",
+  "duration_ms": 45.2,
+  "data": {
+    "operation": "websocket_message_roundtrip",
+    "started_at": "2026-09-06T14:30:04.954800000Z",
+    "ended_at": "2026-09-06T14:30:05.000000000Z",
+    "duration_ms": 45.2,
+    "status": "success"
+  },
+  "tags": ["performance", "websocket", "latency"]
+}
+
+Metric event:
+
+{
+  "id": "evt_jkl012",
+  "timestamp": "2026-09-06T14:30:00.000000000Z",
+  "level": "info",
+  "type": "metric.gauge",
+  "category": "metrics",
+  "source": "telemetry::metrics::gauge",
+  "message": "Active VMs count",
+  "metric": {
+    "name": "active_vms",
+    "type": "gauge",
+    "value": 42,
+    "unit": "count",
+    "labels": {}
+  },
+  "tags": ["metrics", "vm"]
+}
+
+Request tracking event:
+
+{
+  "id": "evt_mno345",
+  "timestamp": "2026-09-06T14:30:01.100000000Z",
+  "level": "info",
+  "type": "request.received",
+  "category": "proxy",
+  "source": "proxy::http::handler",
+  "tenant_id": "tenant_xyz",
+  "session_id": "sess_abc",
+  "trace_id": "trace_456",
+  "message": "HTTP request received",
+  "request": {
+    "method": "POST",
+    "path": "/api/chat",
+    "client_ip": "192.168.1.100",
+    "user_agent": "Mozilla/5.0",
+    "content_length": 1024,
+    "received_at": "2026-09-06T14:30:01.100000000Z"
+  },
+  "tags": ["proxy", "http", "request"]
+}
+
+{
+  "id": "evt_pqr678",
+  "timestamp": "2026-09-06T14:30:01.150000000Z",
+  "level": "info",
+  "type": "request.completed",
+  "category": "proxy",
+  "source": "proxy::http::handler",
+  "tenant_id": "tenant_xyz",
+  "session_id": "sess_abc",
+  "trace_id": "trace_456",
+  "message": "HTTP request completed",
+  "request": {
+    "method": "POST",
+    "path": "/api/chat",
+    "status_code": 200,
+    "duration_ms": 50.3,
+    "bytes_sent": 2048,
+    "completed_at": "2026-09-06T14:30:01.150000000Z"
+  },
+  "tags": ["proxy", "http", "request", "completed"]
+}
+
+State change event:
+
+{
+  "id": "evt_stu901",
+  "timestamp": "2026-09-06T14:30:10.000000000Z",
+  "level": "info",
+  "type": "state.changed",
+  "category": "vm",
+  "source": "vm::manager::registry",
+  "tenant_id": "tenant_xyz",
+  "vm_id": "vm_001",
+  "message": "VM state changed",
+  "state": {
+    "entity": "vm",
+    "entity_id": "vm_001",
+    "from": "booting",
+    "to": "running",
+    "reason": "boot_completed"
+  },
+  "tags": ["vm", "state", "running"]
+}
+
+
+================================================================================
+TELEMETRY EVENT TYPES
+================================================================================
+
+VM Events:
+  vm.boot.started, vm.boot.completed, vm.boot.failed
+  vm.shutdown.started, vm.shutdown.completed, vm.shutdown.failed
+  vm.reboot.started, vm.reboot.completed
+  vm.snapshot.started, vm.snapshot.completed, vm.snapshot.failed
+  vm.restore.started, vm.restore.completed, vm.restore.failed
+  vm.migrate.started, vm.migrate.completed, vm.migrate.failed
+  vm.idle.detected, vm.idle.timeout
+  vm.resource.threshold_exceeded
+  vm.template.registered, vm.template.updated
+
+Network Events:
+  network.ip.allocated, network.ip.released, network.ip.conflict
+  network.tap.created, network.tap.destroyed
+  network.vsock.connected, network.vsock.disconnected
+  network.firewall.rule_added, network.firewall.rule_removed
+  network.traffic.threshold_exceeded
+
+Proxy Events:
+  proxy.request.received, proxy.request.forwarded
+  proxy.request.completed, proxy.request.failed
+  proxy.response.sent, proxy.response.failed
+  proxy.websocket.connected, proxy.websocket.disconnected
+  proxy.websocket.message_sent, proxy.websocket.message_received
+  proxy.connection.pool_exhausted
+
+Auth Events:
+  auth.login.success, auth.login.failed, auth.login.rate_limited
+  auth.logout.success
+  auth.token.created, auth.token.expired, auth.token.revoked
+  auth.permission.denied
+  auth.session.created, auth.session.expired
+
+Supervisor Server Events:
+  supervisor.connected, supervisor.disconnected
+  supervisor.heartbeat.received, supervisor.heartbeat.missed
+  supervisor.tool.called, supervisor.tool.completed, supervisor.tool.failed
+  supervisor.deployment.sent, supervisor.deployment.acknowledged
+  supervisor.deployment.failed
+
+Admin Events:
+  admin.category.created, admin.category.updated, admin.category.deleted
+  admin.tenant.created, admin.tenant.updated, admin.tenant.deleted
+  admin.tenant.category_changed
+  admin.staff.created, admin.staff.updated
+  admin.deployment.configured
+
+Database Events:
+  db.query.started, db.query.completed, db.query.failed
+  db.write.started, db.write.completed, db.write.failed
+  db.migration.started, db.migration.completed
+  db.connection.error
+
+Plugin Events:
+  plugin.loaded, plugin.unloaded, plugin.reloaded
+  plugin.error, plugin.hook.registered, plugin.hook.unregistered
+  plugin.custom.event
+
+System Events:
+  system.startup, system.shutdown, system.config_loaded
+  system.health_check.passed, system.health_check.failed
+  system.memory.warning, system.disk.warning
+  system.error, system.panic
+
+Performance Spans:
+  span.started, span.completed, span.failed
+
+
+================================================================================
+TELEMETRY FILE OUTPUT
+================================================================================
+
+Daily JSON files stored at configured path:
+
+  /var/log/wrapper/telemetry/2026-09-06.json
+  /var/log/wrapper/telemetry/2026-09-07.json
+  /var/log/wrapper/telemetry/2026-09-08.json
+
+Each file is a JSON array of events:
+
+[
+  { "id": "evt_001", "timestamp": "...", ... },
+  { "id": "evt_002", "timestamp": "...", ... },
+  ...
+]
+
+File rotation:
+  - New file created at midnight (or on first event of new day)
+  - Old files optionally compressed to .json.gz
+  - Configurable retention period (delete files older than N days)
+
+Buffer and flush:
+  - Events buffered in memory (configurable buffer size)
+  - Flushed to disk on: buffer full, timer interval, or shutdown
+  - Configurable flush interval (default: 5 seconds)
+
+
+================================================================================
+TELEMETRY BROADCAST (LIVE DASHBOARD)
+================================================================================
+
+When broadcast is enabled, events are streamed live to connected dashboards
+via WebSocket or SSE.
+
+Dashboard connects to: ws://wrapper:8081/telemetry
+
+Dashboard can subscribe to specific event types:
+
+  { "action": "subscribe", "events": ["vm.*", "auth.login.*"] }
+  { "action": "subscribe", "levels": ["error", "critical"] }
+  { "action": "subscribe", "tenants": ["tenant_xyz"] }
+  { "action": "unsubscribe", "events": ["vm.*"] }
+
+Events are pushed in real-time as they occur. Dashboard receives the same
+JSON structure as written to disk.
+
+Throttling:
+  - Rate limit per client (events per second)
+  - Backpressure handling (slow clients get sampled events)
+
+
+================================================================================
+TELEMETRY CONFIGURATION
+================================================================================
+
+[telemetry]
+enabled = true
+output = "both"
+
+[telemetry.disk]
+path = "/var/log/wrapper/telemetry"
+filename_pattern = "telemetry_{date}.json"
+buffer_size = 1000
+flush_interval_seconds = 5
+compress_old_files = true
+retention_days = 30
+
+[telemetry.broadcast]
+bind_address = "0.0.0.0"
+port = 8081
+protocol = "websocket"
+max_clients = 10
+events_per_second_per_client = 100
+auth_required = true
+
+[telemetry.metrics]
+enabled = true
+collection_interval_seconds = 10
+track_latency_percentiles = [50, 95, 99]
+
+[telemetry.filters]
+exclude_from_disk = ["metric.gauge", "metric.counter"]
+min_level = "info"
+
+
+================================================================================
+TELEMETRY INTEGRATION WITH OTHER CRATES
+================================================================================
+
+Every crate emits telemetry events at key points:
+
+vm crate:
+  - vm.boot.started before boot, vm.boot.completed on success, vm.boot.failed on error
+  - vm.shutdown.started/completed/failed
+  - vm.idle.detected when idle timeout reached
+  - span.completed for every operation with duration
+
+proxy crate:
+  - proxy.request.received when request arrives
+  - proxy.request.forwarded when sent to agent
+  - proxy.request.completed when response received
+  - span.completed for request roundtrip latency
+
+auth crate:
+  - auth.login.success/failed on login attempts
+  - auth.token.created/expired/revoked
+  - auth.permission.denied on unauthorized access
+
+supervisor_server crate:
+  - supervisor.connected/disconnected
+  - supervisor.heartbeat.received/missed
+  - supervisor.tool.called/completed/failed
+  - supervisor.deployment.sent/acknowledged/failed
+
+db crate:
+  - db.query.started/completed/failed with duration
+  - db.write.started/completed/failed with duration
+
+plugin_host crate:
+  - plugin.loaded/unloaded/reloaded
+  - plugin.error on plugin failure
+
+All crates use the same telemetry instance. Configuration is centralized.
+
+
+================================================================================
+TELEMETRY QUERY AND ANALYSIS
+================================================================================
+
+The telemetry crate provides query capabilities for the admin dashboard:
+
+  - Search events by: type, level, tenant_id, time range, tags
+  - Aggregate metrics: requests per minute, error rate, average latency
+  - Export: JSON, CSV for external analysis
+  - Real-time: subscribe to live events via broadcast
+
+Admin dashboard endpoints:
+  GET /admin/telemetry/events?type=vm.*&level=error&from=...&to=...
+  GET /admin/telemetry/metrics?metric=active_vms&from=...&to=...
+  GET /admin/telemetry/stats?from=...&to=...
+  GET /admin/telemetry/export?format=json&from=...&to=...
+  WS  /admin/telemetry/live
+
+
+================================================================================
+CRATE: core
+================================================================================
+
+crates/core/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── types/
+    │   ├── mod.rs
+    │   ├── tenant.rs
+    │   ├── vm.rs
+    │   ├── network.rs
+    │   ├── session.rs
+    │   ├── category.rs
+    │   ├── deployment.rs
+    │   └── events.rs
+    ├── plugin/
+    │   ├── mod.rs
+    │   ├── trait.rs
+    │   ├── info.rs
+    │   ├── context.rs
+    │   ├── hooks.rs
+    │   └── api.rs
+    ├── error/
+    │   ├── mod.rs
+    │   └── wrapper_error.rs
+    └── util/
+        ├── mod.rs
+        ├── time.rs
+        ├── fs.rs
+        └── validation.rs
+
+
+================================================================================
+CRATE: db
+================================================================================
+
+crates/db/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── global/
+    │   ├── mod.rs
+    │   ├── store.rs
+    │   ├── tenants.rs
+    │   ├── sessions.rs
+    │   ├── networks.rs
+    │   ├── categories.rs
+    │   └── vm_templates.rs
+    ├── tenant/
+    │   ├── mod.rs
+    │   ├── store.rs
+    │   ├── profile.rs
+    │   ├── memory.rs
+    │   ├── history.rs
+    │   ├── projects.rs
+    │   ├── skills.rs
+    │   ├── reports.rs
+    │   └── configs.rs
+    ├── migration/
+    │   ├── mod.rs
+    │   ├── global.rs
+    │   ├── tenant.rs
+    │   └── plugin.rs
+    └── query/
+        ├── mod.rs
+        ├── builder.rs
+        └── filter.rs
+
+
+================================================================================
+CRATE: vm
+================================================================================
+
+crates/vm/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── manager/
+    │   ├── mod.rs
+    │   ├── vm_manager.rs
+    │   ├── registry.rs
+    │   ├── pool.rs
+    │   └── category.rs
+    ├── lifecycle/
+    │   ├── mod.rs
+    │   ├── boot.rs
+    │   ├── shutdown.rs
+    │   ├── reboot.rs
+    │   ├── snapshot.rs
+    │   ├── restore.rs
+    │   └── migrate.rs
+    ├── firecracker/
+    │   ├── mod.rs
+    │   ├── client.rs
+    │   ├── config.rs
+    │   ├── drive.rs
+    │   ├── boot_source.rs
+    │   └── machine.rs
+    ├── templates/
+    │   ├── mod.rs
+    │   ├── registry.rs
+    │   ├── builder.rs
+    │   ├── version.rs
+    │   ├── category.rs
+    │   └── validate.rs
+    ├── idle/
+    │   ├── mod.rs
+    │   ├── tracker.rs
+    │   ├── timeout.rs
+    │   └── action.rs
+    └── resources/
+        ├── mod.rs
+        ├── limits.rs
+        ├── monitor.rs
+        └── enforce.rs
+
+
+================================================================================
+CRATE: network
+================================================================================
+
+crates/network/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── tap/
+    │   ├── mod.rs
+    │   ├── create.rs
+    │   ├── destroy.rs
+    │   ├── configure.rs
+    │   └── list.rs
+    ├── ip/
+    │   ├── mod.rs
+    │   ├── pool.rs
+    │   ├── allocate.rs
+    │   ├── release.rs
+    │   └── conflict.rs
+    ├── vsock/
+    │   ├── mod.rs
+    │   ├── config.rs
+    │   ├── host.rs
+    │   └── guest.rs
+    ├── bridge/
+    │   ├── mod.rs
+    │   ├── create.rs
+    │   ├── attach.rs
+    │   └── destroy.rs
+    ├── nat/
+    │   ├── mod.rs
+    │   ├── setup.rs
+    │   └── rules.rs
+    ├── firewall/
+    │   ├── mod.rs
+    │   ├── rules.rs
+    │   └── enforce.rs
+    └── monitor/
+        ├── mod.rs
+        ├── traffic.rs
+        └── bandwidth.rs
+
+
+================================================================================
+CRATE: proxy
+================================================================================
+
+crates/proxy/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── server/
+    │   ├── mod.rs
+    │   ├── tcp.rs
+    │   ├── tls.rs
+    │   └── shutdown.rs
+    ├── websocket/
+    │   ├── mod.rs
+    │   ├── handler.rs
+    │   ├── upgrade.rs
+    │   ├── frame.rs
+    │   ├── stream.rs
+    │   └── ping.rs
+    ├── http/
+    │   ├── mod.rs
+    │   ├── handler.rs
+    │   ├── body.rs
+    │   ├── multipart.rs
+    │   └── streaming.rs
+    ├── routing/
+    │   ├── mod.rs
+    │   ├── router.rs
+    │   ├── tenant.rs
+    │   ├── vm_lookup.rs
+    │   └── fallback.rs
+    ├── middleware/
+    │   ├── mod.rs
+    │   ├── chain.rs
+    │   ├── auth.rs
+    │   ├── logging.rs
+    │   ├── rate_limit.rs
+    │   ├── cors.rs
+    │   └── custom.rs
+    ├── transform/
+    │   ├── mod.rs
+    │   ├── request.rs
+    │   ├── response.rs
+    │   └── headers.rs
+    └── pool/
+        ├── mod.rs
+        ├── connection.rs
+        └── health.rs
+
+
+================================================================================
+CRATE: auth
+================================================================================
+
+crates/auth/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── login/
+    │   ├── mod.rs
+    │   ├── handler.rs
+    │   ├── validate.rs
+    │   ├── password.rs
+    │   └── attempt.rs
+    ├── tokens/
+    │   ├── mod.rs
+    │   ├── generate.rs
+    │   ├── verify.rs
+    │   ├── refresh.rs
+    │   ├── revoke.rs
+    │   └── store.rs
+    ├── session/
+    │   ├── mod.rs
+    │   ├── create.rs
+    │   ├── validate.rs
+    │   ├── expire.rs
+    │   └── cleanup.rs
+    ├── permissions/
+    │   ├── mod.rs
+    │   ├── roles.rs
+    │   ├── check.rs
+    │   └── enforce.rs
+    ├── oauth/
+    │   ├── mod.rs
+    │   ├── provider.rs
+    │   ├── callback.rs
+    │   └── link.rs
+    ├── mfa/
+    │   ├── mod.rs
+    │   ├── totp.rs
+    │   ├── backup.rs
+    │   └── verify.rs
+    └── audit/
+        ├── mod.rs
+        ├── log.rs
+        └── report.rs
+
+
+================================================================================
+CRATE: supervisor_server
+================================================================================
+
+crates/supervisor_server/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── listener/
+    │   ├── mod.rs
+    │   ├── tcp.rs
+    │   ├── authenticate.rs
+    │   └── rate_limit.rs
+    ├── mcp/
+    │   ├── mod.rs
+    │   ├── server.rs
+    │   ├── tools.rs
+    │   ├── handler.rs
+    │   └── permissions.rs
+    ├── tools/
+    │   ├── mod.rs
+    │   ├── memory.rs
+    │   ├── profile.rs
+    │   ├── history.rs
+    │   ├── projects.rs
+    │   ├── skills.rs
+    │   ├── reports.rs
+    │   ├── configs.rs
+    │   └── tenant.rs
+    ├── deployment/
+    │   ├── mod.rs
+    │   ├── receive.rs
+    │   ├── category.rs
+    │   ├── package.rs
+    │   ├── stream.rs
+    │   └── verify.rs
+    ├── heartbeat/
+    │   ├── mod.rs
+    │   ├── receive.rs
+    │   ├── track.rs
+    │   └── timeout.rs
+    └── protocol/
+        ├── mod.rs
+        ├── message.rs
+        ├── version.rs
+        └── compat.rs
+
+
+================================================================================
+CRATE: admin
+================================================================================
+
+crates/admin/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── categories/
+    │   ├── mod.rs
+    │   ├── create.rs
+    │   ├── update.rs
+    │   ├── delete.rs
+    │   ├── list.rs
+    │   └── assign.rs
+    ├── vm_templates/
+    │   ├── mod.rs
+    │   ├── register.rs
+    │   ├── update.rs
+    │   ├── map_category.rs
+    │   ├── list.rs
+    │   └── validate.rs
+    ├── deployments/
+    │   ├── mod.rs
+    │   ├── config.rs
+    │   ├── plugins.rs
+    │   ├── configs.rs
+    │   ├── files.rs
+    │   ├── commands.rs
+    │   └── preview.rs
+    ├── tenants/
+    │   ├── mod.rs
+    │   ├── create.rs
+    │   ├── update.rs
+    │   ├── suspend.rs
+    │   ├── delete.rs
+    │   ├── change_category.rs
+    │   └── bulk.rs
+    ├── staff/
+    │   ├── mod.rs
+    │   ├── create.rs
+    │   ├── permissions.rs
+    │   ├── audit.rs
+    │   └── oversight.rs
+    └── dashboard/
+        ├── mod.rs
+        ├── stats.rs
+        ├── health.rs
+        └── alerts.rs
+
+
+================================================================================
+CRATE: plugin_host
+================================================================================
+
+crates/plugin_host/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── loader/
+    │   ├── mod.rs
+    │   ├── load.rs
+    │   ├── unload.rs
+    │   ├── symbols.rs
+    │   └── validate.rs
+    ├── watcher/
+    │   ├── mod.rs
+    │   ├── folder.rs
+    │   ├── event.rs
+    │   └── scan.rs
+    ├── registry/
+    │   ├── mod.rs
+    │   ├── store.rs
+    │   ├── lookup.rs
+    │   ├── dependency.rs
+    │   └── priority.rs
+    ├── hooks/
+    │   ├── mod.rs
+    │   ├── dispatch.rs
+    │   ├── priority.rs
+    │   ├── filter.rs
+    │   └── error.rs
+    ├── api/
+    │   ├── mod.rs
+    │   ├── register.rs
+    │   ├── lookup.rs
+    │   └── call.rs
+    ├── sandbox/
+    │   ├── mod.rs
+    │   ├── permissions.rs
+    │   └── isolate.rs
+    └── lifecycle/
+        ├── mod.rs
+        ├── init.rs
+        ├── shutdown.rs
+        └── reload.rs
+
+
+================================================================================
+CRATE: api
+================================================================================
+
+crates/api/
+├── Cargo.toml
+└── src/
+    ├── lib.rs
+    ├── context/
+    │   ├── mod.rs
+    │   ├── builder.rs
+    │   └── access.rs
+    ├── db.rs
+    ├── vm.rs
+    ├── network.rs
+    ├── proxy.rs
+    ├── auth.rs
+    ├── supervisor.rs
+    ├── admin.rs
+    ├── telemetry.rs
+    ├── plugin.rs
+    ├── events/
+    │   ├── mod.rs
+    │   ├── emit.rs
+    │   └── subscribe.rs
+    └── macros/
+        ├── mod.rs
+        └── export.rs
+
+
+================================================================================
+MAIN BINARY (src/)
+================================================================================
+
+src/
+├── main.rs
+├── config/
+│   ├── mod.rs
+│   ├── load.rs
+│   ├── parse.rs
+│   └── validate.rs
+├── shutdown/
+│   ├── mod.rs
+│   ├── graceful.rs
+│   └── signal.rs
+└── logging/
+    ├── mod.rs
+    ├── init.rs
+    └── format.rs
+
+
+================================================================================
+DATABASE SCHEMAS
+================================================================================
+
+Global DB (data/global.db)
+----------------------------
+
+CREATE TABLE categories (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    vm_template_id TEXT NOT NULL,
+    max_tenants INTEGER,
+    status TEXT DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE vm_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    rootfs_path TEXT NOT NULL,
+    kernel_path TEXT NOT NULL,
+    vcpu_count INTEGER DEFAULT 2,
+    memory_mb INTEGER DEFAULT 2048,
+    requires_gpu INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE tenants (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    display_name TEXT,
+    category_id TEXT NOT NULL REFERENCES categories(id),
+    vm_ip TEXT,
+    vm_process_id INTEGER,
+    vm_template_id TEXT REFERENCES vm_templates(id),
+    tap_device TEXT,
+    status TEXT DEFAULT 'active',
+    db_path TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_login TEXT,
+    category_changed_at TEXT
+);
+
+CREATE TABLE category_assignments (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    category_id TEXT NOT NULL REFERENCES categories(id),
+    assigned_by TEXT,
+    assigned_at TEXT NOT NULL,
+    migrated INTEGER DEFAULT 0,
+    notes TEXT
+);
+
+CREATE TABLE deployment_configs (
+    id TEXT PRIMARY KEY,
+    category_id TEXT NOT NULL REFERENCES categories(id),
+    config_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    content BLOB,
+    checksum TEXT,
+    priority INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE networks (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    ip_address TEXT NOT NULL,
+    tap_device TEXT NOT NULL,
+    allocated_at TEXT NOT NULL
+);
+
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    token TEXT UNIQUE NOT NULL,
+    ip_address TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_active TEXT NOT NULL
+);
+
+
+Per-tenant DB (data/tenants/<id>.db)
+-------------------------------------
+
+CREATE TABLE profiles (
+    tenant_id TEXT PRIMARY KEY,
+    agent_name TEXT NOT NULL,
+    nickname TEXT,
+    language TEXT DEFAULT 'en',
+    timezone TEXT DEFAULT 'UTC',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE memory (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    category TEXT NOT NULL,
+    importance REAL DEFAULT 0.5,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE history (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    action TEXT NOT NULL,
+    domain TEXT,
+    summary TEXT,
+    duration_seconds INTEGER,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    domain TEXT,
+    status TEXT DEFAULT 'active',
+    description TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE skills (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    domain TEXT,
+    level TEXT DEFAULT 'beginner',
+    confidence REAL DEFAULT 0.5,
+    last_practiced TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE reports (
+    id TEXT PRIMARY KEY,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    content TEXT NOT NULL,
+    highlights TEXT,
+    areas_to_improve TEXT,
+    generated_at TEXT NOT NULL
+);
+
+CREATE TABLE configs (
+    id TEXT PRIMARY KEY,
+    key TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+
+================================================================================
+CATEGORY-BASED DEPLOYMENT
+================================================================================
+
+When a tenant is assigned to a category (or changes category), the wrapper
+deploys a package to the VM based on that category.
+
+Deployment package includes:
+  1. VM TEMPLATE — which rootfs/kernel to use
+  2. SUPERVISOR PLUGINS — .so files for the supervisor itself
+  3. AGENT PLUGINS — .so files or tools for the agent
+  4. CONFIG FILES — configuration for agent, memory binary, MCP servers
+  5. BINARIES — additional tools or programs the category needs
+  6. COMMANDS — scripts to run after deployment (setup, initialization)
+
+Example category configurations:
+
+  Category: "robotics"
+    VM Template: robotics-template (has ROS, Gazebo, Arduino tools)
+    Supervisor Plugins: robotics_monitor.so
+    Agent Plugins: robotics_guide.so, electronics_tool.so
+    Config Files: agent_robotics.conf, ros_config.yaml
+    Commands: initialize_ros.sh, test_motors.sh
+
+  Category: "painting"
+    VM Template: painting-template (has Blender, GIMP, color tools)
+    Supervisor Plugins: art_monitor.so
+    Agent Plugins: painting_guide.so, color_theory.so
+    Config Files: agent_painting.conf, palette_defaults.json
+    Commands: initialize_canvas.sh
+
+  Category: "staff"
+    VM Template: staff-template (has dashboard tools, reporting, oversight)
+    Supervisor Plugins: staff_monitor.so, audit_plugin.so
+    Agent Plugins: reporting_tool.so, oversight_tool.so
+    Config Files: agent_staff.conf, dashboard_config.json
+    Commands: initialize_staff_dashboard.sh
+
+
+================================================================================
+VM MIGRATION ON CATEGORY CHANGE
+================================================================================
+
+When a tenant changes category:
+
+1. Admin (or tenant) requests category change
+2. Wrapper looks up new category's VM template
+3. If different template:
+   a. Shutdown current VM (data disk stays on host)
+   b. Boot new VM with new template + same data disk
+   c. Deploy new category's plugins, configs, files to new VM
+   d. Update tenant record: category_id, vm_template_id
+4. If same template:
+   a. Just deploy new category's plugins, configs, files to existing VM
+5. Data on disk (memory, history, projects) persists unchanged
+6. Only the VM environment changes to match new category
+
+
+================================================================================
+COMMUNICATION FLOW: SUPERVISOR → WRAPPER
+================================================================================
+
+[Agent inside VM]
+       |
+       | MCP tool call (unix socket)
+       v
+[Supervisor inside VM]
+       |
+       | MCP request (network: save_memory, get_profile, etc.)
+       v
+[supervisor_server in Wrapper]
+       |
+       | validate tenant_id matches this VM
+       v
+[db crate] — read/write tenant DB
+       |
+       v
+[supervisor_server] — return response to supervisor
+       |
+       v
+[Supervisor] — return to agent
+
+
+================================================================================
+STARTUP FLOW
+================================================================================
+
+1. Load config.toml
+2. Initialize telemetry
+3. Initialize logging
+4. db::global::init()              → open global DB, run migrations
+5. db::tenant::init()              → ensure tenants/ folder exists
+6. vm::templates::init()           → load registered VM templates
+7. vm::manager::init()             → check Firecracker binary
+8. network::ip_pool::init()        → load IP range from config
+9. supervisor_server::start()      → listen for supervisor connections
+10. auth::init()                   → load auth config
+11. proxy::start()                 → start client proxy
+12. admin::init()                  → load categories and deployment configs
+13. plugin_host::init()            → load all plugins
+14. plugin_host::watcher::start()  → watch plugins/ for changes
+15. telemetry::broadcast::start()  → start live telemetry server
+16. Enter event loop               → run until shutdown
+
+
+================================================================================
+CONFIGURATION (config.toml)
+================================================================================
+
+[wrapper]
+bind_address = "0.0.0.0"
+port = 8080
+
+[firecracker]
+binary_path = "~/.local/bin/firecracker"
+
+[network]
+ip_range = "172.16.0.0/12"
+gateway = "172.16.0.1"
+
+[database]
+global_path = "data/global.db"
+tenants_dir = "data/tenants"
+
+[supervisor_server]
+bind_address = "0.0.0.0"
+port = 9090
+heartbeat_timeout_seconds = 30
+
+[plugins]
+directory = "plugins"
+hot_reload = true
+
+[categories]
+config_path = "data/categories"
+
+[deployments]
+storage_path = "data/deployments"
+
+[telemetry]
+enabled = true
+output = "both"
+
+[telemetry.disk]
+path = "/var/log/wrapper/telemetry"
+filename_pattern = "telemetry_{date}.json"
+buffer_size = 1000
+flush_interval_seconds = 5
+compress_old_files = true
+retention_days = 30
+
+[telemetry.broadcast]
+bind_address = "0.0.0.0"
+port = 8081
+protocol = "websocket"
+max_clients = 10
+events_per_second_per_client = 100
+auth_required = true
+
+[telemetry.metrics]
+enabled = true
+collection_interval_seconds = 10
+track_latency_percentiles = [50, 95, 99]
+
+[telemetry.filters]
+exclude_from_disk = ["metric.gauge", "metric.counter"]
+min_level = "info"
