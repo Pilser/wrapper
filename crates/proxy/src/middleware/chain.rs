@@ -1,6 +1,6 @@
 //! Ordered middleware chain stub.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Named checks run in order. Stub: logs names and returns Ok.

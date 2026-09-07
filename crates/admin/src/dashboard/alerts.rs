@@ -1,6 +1,6 @@
 //! Dashboard alerts (derived from live global-DB state, raised via telemetry).
 
-use core::{Error, Result, TenantStatus};
+use shared::{Error, Result, TenantStatus};
 use telemetry::{Level, Telemetry};
 
 /// An alert visible on the admin dashboard.

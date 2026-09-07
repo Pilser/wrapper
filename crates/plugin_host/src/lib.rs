@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use telemetry::Telemetry;
 
-pub use core::{
+pub use shared::{
     HookPoint, Plugin, PluginContext, PluginInfo, PluginType, PluginVersion, Result,
 };
 

@@ -1,7 +1,7 @@
 //! Binary / data files shipped in a deployment package (rows of
 //! `deployment_configs` with `config_type = "file"`).
 
-use core::{DeploymentConfig, Error, Result};
+use shared::{DeploymentConfig, Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Stage a file for a category's deployment package and persist it via
@@ -19,7 +19,7 @@ pub async fn push_file(
             "category_id, name and path must not be empty".into(),
         ));
     }
-    let now = core::now_rfc3339();
+    let now = shared::now_rfc3339();
     let entry = DeploymentConfig {
         id: format!("dep_{}", uuid::Uuid::new_v4()),
         category_id: category_id.to_string(),

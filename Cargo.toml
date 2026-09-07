@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 api = { path = "crates/api" }
-core = { path = "crates/core" }
+shared = { path = "crates/shared" }
 telemetry = { path = "crates/telemetry" }
 turso = { workspace = true }
 tokio = { workspace = true }
@@ -19,7 +19,7 @@ chrono = { workspace = true }
 [workspace]
 members = [
     ".",
-    "crates/core",
+    "crates/shared",
     "crates/telemetry",
     "crates/db",
     "crates/network",

@@ -1,4 +1,4 @@
-use core::Result;
+use shared::Result;
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 
@@ -19,6 +19,6 @@ pub async fn handle_heartbeat(
     Ok(serde_json::json!({
         "ok": true,
         "tenant_id": tenant_id,
-        "timestamp": core::now_rfc3339(),
+        "timestamp": shared::now_rfc3339(),
     }))
 }

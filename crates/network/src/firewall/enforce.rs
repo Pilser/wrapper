@@ -1,6 +1,6 @@
 //! Enforce the rule set on a tenant's tap device.
 
-use core::FirewallAction;
+use shared::FirewallAction;
 
 use super::FirewallManager;
 

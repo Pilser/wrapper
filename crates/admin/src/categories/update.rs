@@ -1,6 +1,6 @@
 //! Update a category (row in the global `categories` table).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Patch for [`update_category`]; `None` fields are left unchanged.
@@ -51,7 +51,7 @@ pub async fn update_category(
     if patch.max_tenants.is_some() {
         category.max_tenants = patch.max_tenants;
     }
-    category.updated_at = core::now_rfc3339();
+    category.updated_at = shared::now_rfc3339();
     db::global::categories::update(&conn, &category)
         .await
         .map_err(|e| Error::Database(e.to_string()))?;

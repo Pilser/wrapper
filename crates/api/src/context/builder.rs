@@ -1,7 +1,7 @@
 //! Fluent builder for [`super::ApiContext`].
 
 use super::ApiContext;
-use core::{Error, Result};
+use shared::{Error, Result};
 
 /// Assemble an [`ApiContext`] step by step.
 #[derive(Debug, Default)]

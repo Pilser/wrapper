@@ -5,7 +5,7 @@ pub mod rules;
 
 use std::sync::Mutex;
 
-use core::FirewallRule;
+use shared::FirewallRule;
 use telemetry::{Level, Telemetry};
 
 /// Tracks firewall rules per VM.

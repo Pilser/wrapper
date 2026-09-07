@@ -8,7 +8,7 @@ name = "db"
 path = "src/lib.rs"
 
 [dependencies]
-core = { path = "../core" }
+shared = { path = "../shared" }
 telemetry = { path = "../telemetry" }
 turso = { workspace = true }
 serde = { workspace = true }

@@ -1,5 +1,5 @@
 use auth::AuthService;
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Validate that the connecting supervisor may act for `tenant_id`.

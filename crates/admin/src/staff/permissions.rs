@@ -1,6 +1,6 @@
 //! Staff permissions (stubs emitting telemetry).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Grant a permission to a staff member.

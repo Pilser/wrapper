@@ -12,7 +12,7 @@ pub use idle::{IdleAction, IdleTracker};
 pub use manager::{VmManager, VmRegistry};
 pub use templates::{TemplateRegistry, VmTemplateBuilder};
 
-use core::VmInfo;
+use shared::VmInfo;
 use telemetry::Telemetry;
 
 /// Facade over VM management with shared telemetry.

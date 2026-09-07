@@ -1,6 +1,6 @@
 //! CRUD for the `deployment_configs` table.
 
-use core::DeploymentConfig;
+use shared::DeploymentConfig;
 use turso::Connection;
 
 pub async fn insert(conn: &Connection, d: &DeploymentConfig) -> anyhow::Result<()> {

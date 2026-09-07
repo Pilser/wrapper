@@ -6,7 +6,7 @@ pub mod health;
 pub use connection::PooledConn;
 pub use health::HealthChecker;
 
-use core::Result;
+use shared::Result;
 use std::collections::HashMap;
 use telemetry::{Level, Telemetry};
 

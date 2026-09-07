@@ -1,7 +1,7 @@
 //! Post-deployment commands (setup / initialization scripts) persisted as
 //! rows of `deployment_configs` with `config_type = "command"`.
 
-use core::{DeploymentConfig, Error, Result};
+use shared::{DeploymentConfig, Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Queue a script to run inside the VM after a deployment lands and persist
@@ -17,7 +17,7 @@ pub async fn queue_command(
             "category_id and script must not be empty".into(),
         ));
     }
-    let now = core::now_rfc3339();
+    let now = shared::now_rfc3339();
     let entry = DeploymentConfig {
         id: format!("dep_{}", uuid::Uuid::new_v4()),
         category_id: category_id.to_string(),

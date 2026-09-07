@@ -15,7 +15,7 @@ pub use monitor::{Bandwidth, TrafficMonitor};
 pub use tap::{TapCreateOptions, create_tap, destroy_tap, list_taps};
 pub use vsock::VsockConfig;
 
-use core::NetworkConfig;
+use shared::NetworkConfig;
 use telemetry::Telemetry;
 
 /// Top-level facade tying the virtual-networking subcomponents together.

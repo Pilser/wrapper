@@ -1,6 +1,6 @@
 //! Request transform: add headers and strip a path prefix.
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use telemetry::{Level, Telemetry};
 
 /// Mutates incoming requests before forwarding.

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use serde_json::Value;
 
 use super::error::HookError;
-use core::HookPoint;
+use shared::HookPoint;
 
 pub type HookCallback = Arc<dyn Fn(&HookPoint, &Value) -> std::result::Result<(), HookError> + Send + Sync>;
 

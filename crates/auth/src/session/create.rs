@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use core::Session;
+use shared::Session;
 
 #[derive(Clone, Default)]
 pub struct SessionStore {
@@ -16,7 +16,7 @@ impl SessionStore {
     }
 
     pub fn create(&self, username: &str, token: &str) -> anyhow::Result<()> {
-        let now = core::now_rfc3339();
+        let now = shared::now_rfc3339();
         let session = Session {
             id: format!("sess_{}", &token[..8]),
             tenant_id: username.to_string(),

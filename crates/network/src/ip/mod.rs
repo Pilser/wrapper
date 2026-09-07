@@ -5,5 +5,5 @@ pub mod conflict;
 pub mod pool;
 pub mod release;
 
-pub use core::IpAllocation;
+pub use shared::IpAllocation;
 pub use pool::IpPool;

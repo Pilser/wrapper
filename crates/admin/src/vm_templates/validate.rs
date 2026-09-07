@@ -1,6 +1,6 @@
 //! Validate a VM template before registration or update.
 
-use core::{Error, Result, VmTemplate};
+use shared::{Error, Result, VmTemplate};
 
 /// Check that paths are set and resources are sane.
 pub fn validate_template(template: &VmTemplate) -> Result<()> {

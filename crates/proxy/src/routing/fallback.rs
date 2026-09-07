@@ -1,6 +1,6 @@
 //! Fallback handler for unroutable requests (503 stub).
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Serves a 503 for requests no route handles.

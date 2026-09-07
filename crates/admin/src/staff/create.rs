@@ -1,6 +1,6 @@
 //! Create a staff account (row in the global `staff` table).
 
-use core::{now_rfc3339, Error, Result};
+use shared::{now_rfc3339, Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// A staff account with dashboard / oversight duties.

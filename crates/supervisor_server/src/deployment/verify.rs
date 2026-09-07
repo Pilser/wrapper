@@ -1,4 +1,4 @@
-use core::{DeploymentManifest, Error, Result};
+use shared::{DeploymentManifest, Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Compare two `sha256:<hex>` checksum strings in constant time.

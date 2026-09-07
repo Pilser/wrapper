@@ -1,6 +1,6 @@
 //! Plugin-host handle for plugins (re-exports the `core` plugin contract).
 
-pub use core::{HookPoint, Plugin, PluginContext, PluginInfo};
+pub use shared::{HookPoint, Plugin, PluginContext, PluginInfo};
 
 /// Thin wrapper exposing plugin metadata to plugins.
 #[derive(Clone, Debug)]
@@ -16,8 +16,8 @@ impl PluginApi {
     /// Describe this API surface as plugin info.
     pub fn info(&self) -> PluginInfo {
         let mut info = PluginInfo::new("wrapper-api");
-        info.version = core::PluginVersion::new(0, 1, 0);
-        info.plugin_type = core::PluginType::Builtin;
+        info.version = shared::PluginVersion::new(0, 1, 0);
+        info.plugin_type = shared::PluginType::Builtin;
         info.description = "wrapper plugin API".to_string();
         info
     }

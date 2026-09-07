@@ -1,7 +1,7 @@
 //! Auth middleware stub: requires an `authorization` header.
 
 use auth::AuthService;
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use telemetry::{Level, Telemetry};
 
 /// Rejects requests without an authorization header.

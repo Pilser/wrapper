@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 
 /// True when `now_ms - last_seen_ms` exceeds the timeout.
 pub fn is_timed_out(last_seen_ms: i64, now_ms: i64, timeout_secs: u64) -> bool {

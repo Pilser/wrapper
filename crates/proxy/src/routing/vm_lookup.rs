@@ -9,7 +9,7 @@
 //! 2. Otherwise — no DB handle, no matching row, or a query error — fall back
 //!    to the configured default target (operator config default).
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use telemetry::{Level, Telemetry};
 
 /// VM agent port appended to bare IPs read from the `networks` table.

@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 
@@ -27,7 +27,7 @@ pub async fn handle_projects_call(
             let name = super::str_arg(payload, "name").ok_or_else(|| {
                 Error::InvalidInput("projects.create missing `name`".to_string())
             })?;
-            let now = core::now_rfc3339();
+            let now = shared::now_rfc3339();
             let row = db::tenant::projects::ProjectRow {
                 id: super::str_arg(payload, "id")
                     .map(|s| s.to_string())

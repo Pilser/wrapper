@@ -1,6 +1,6 @@
 //! List categories via `db::global::categories::list`.
 
-use core::{Category, Error, Result};
+use shared::{Category, Error, Result};
 
 /// Return every row of the global `categories` table ordered by name.
 pub async fn list_categories(db: &db::GlobalDb) -> Result<Vec<Category>> {

@@ -1,6 +1,6 @@
 //! Staff audit trail (stubs emitting telemetry).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// One auditable staff action.

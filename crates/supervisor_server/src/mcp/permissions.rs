@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 
 use super::tools::is_known_tool;
 

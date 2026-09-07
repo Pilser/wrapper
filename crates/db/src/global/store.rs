@@ -1,6 +1,6 @@
 //! The global database handle.
 
-use core::now_rfc3339;
+use shared::now_rfc3339;
 use telemetry::Telemetry;
 use turso::Builder;
 

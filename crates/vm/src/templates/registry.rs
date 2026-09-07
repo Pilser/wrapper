@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use core::VmTemplate;
+use shared::VmTemplate;
 
 #[derive(Default)]
 pub struct TemplateRegistry {

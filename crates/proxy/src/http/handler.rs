@@ -7,7 +7,7 @@
 //! [`ResponseTransform`] to the upstream response before returning it.
 
 use bytes::Bytes;
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use http_body_util::{BodyExt, Full};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
 use telemetry::{Level, Telemetry};

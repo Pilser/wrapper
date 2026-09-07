@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 
@@ -30,7 +30,7 @@ pub async fn handle_configs_call(
             let value = super::str_arg(payload, "value").ok_or_else(|| {
                 Error::InvalidInput("configs.set missing `value`".to_string())
             })?;
-            let now = core::now_rfc3339();
+            let now = shared::now_rfc3339();
             db::tenant::configs::set(&conn, key, value, &now)
                 .await
                 .map_err(|e| Error::Database(e.to_string()))?;

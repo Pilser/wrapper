@@ -23,7 +23,7 @@ pub fn handle_callback(
             .category("auth")
             .message("oauth callback with empty provider name")
             .emit();
-        return Err(core::Error::InvalidInput("oauth provider name must not be empty".into()).into());
+        return Err(shared::Error::InvalidInput("oauth provider name must not be empty".into()).into());
     }
     if code.trim().is_empty() {
         telemetry
@@ -33,7 +33,7 @@ pub fn handle_callback(
             .category("auth")
             .message(format!("oauth callback from {} with empty code", provider.name))
             .emit();
-        return Err(core::Error::InvalidInput("oauth callback code must not be empty".into()).into());
+        return Err(shared::Error::InvalidInput("oauth callback code must not be empty".into()).into());
     }
     if state.trim().is_empty() {
         telemetry
@@ -43,7 +43,7 @@ pub fn handle_callback(
             .category("auth")
             .message(format!("oauth callback from {} with empty state", provider.name))
             .emit();
-        return Err(core::Error::InvalidInput("oauth callback state must not be empty".into()).into());
+        return Err(shared::Error::InvalidInput("oauth callback state must not be empty".into()).into());
     }
     telemetry
         .builder()

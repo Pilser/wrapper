@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 
@@ -43,7 +43,7 @@ pub async fn handle_reports_call(
                 highlights: super::str_arg(payload, "highlights").map(|s| s.to_string()),
                 areas_to_improve: super::str_arg(payload, "areas_to_improve")
                     .map(|s| s.to_string()),
-                generated_at: core::now_rfc3339(),
+                generated_at: shared::now_rfc3339(),
             };
             db::tenant::reports::insert(&conn, &row)
                 .await

@@ -1,6 +1,6 @@
 //! Builder for VM templates.
 
-use core::VmTemplate;
+use shared::VmTemplate;
 
 pub struct VmTemplateBuilder {
     template: VmTemplate,
@@ -20,7 +20,7 @@ impl VmTemplateBuilder {
                 vcpu_count: 2,
                 memory_mb: 2048,
                 requires_gpu: false,
-                status: core::VmTemplateStatus::Active,
+                status: shared::VmTemplateStatus::Active,
                 created_at: String::new(),
                 updated_at: String::new(),
             },

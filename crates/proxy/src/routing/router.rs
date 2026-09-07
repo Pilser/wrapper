@@ -1,6 +1,6 @@
 //! Path/header router stub: maps a request to a tenant id.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Routes requests to tenants. Stub: header `x-tenant-id` or "default".

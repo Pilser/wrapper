@@ -8,7 +8,7 @@ name = "network"
 path = "src/lib.rs"
 
 [dependencies]
-core = { path = "../core" }
+shared = { path = "../shared" }
 telemetry = { path = "../telemetry" }
 serde = { workspace = true }
 serde_json = { workspace = true }

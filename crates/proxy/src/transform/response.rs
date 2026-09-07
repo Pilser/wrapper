@@ -1,6 +1,6 @@
 //! Response transform: add headers before sending to the client.
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use telemetry::{Level, Telemetry};
 
 /// Mutates outgoing responses.

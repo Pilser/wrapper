@@ -1,6 +1,6 @@
-//! Dry-run preview of a [`core::DeploymentManifest`].
+//! Dry-run preview of a [`shared::DeploymentManifest`].
 
-use core::DeploymentManifest;
+use shared::DeploymentManifest;
 
 /// Human-readable summary of what a deployment would ship.
 #[derive(Debug, Clone)]

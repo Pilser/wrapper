@@ -4,6 +4,6 @@
 pub fn format_event(level: &str, target: &str, message: &str) -> String {
     format!(
         "{} [{level}] {target}: {message}",
-        core::now_rfc3339()
+        shared::now_rfc3339()
     )
 }

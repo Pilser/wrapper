@@ -1,6 +1,6 @@
 //! CRUD for the `categories` table.
 
-use core::Category;
+use shared::Category;
 use turso::Connection;
 
 pub async fn insert(conn: &Connection, c: &Category) -> anyhow::Result<()> {
@@ -27,7 +27,7 @@ pub async fn list(conn: &Connection) -> anyhow::Result<Vec<Category>> {
             description: Some(text(2)).filter(|s| !s.is_empty()),
             vm_template_id: text(3),
             max_tenants: row.get_value(4).ok().and_then(|v| v.as_integer().copied()),
-            status: core::CategoryStatus::Active,
+            status: shared::CategoryStatus::Active,
             created_at: text(6), updated_at: text(7),
         });
     }

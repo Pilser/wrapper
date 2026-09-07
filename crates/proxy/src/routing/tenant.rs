@@ -1,6 +1,6 @@
 //! Tenant extraction and resolution stub.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Where a tenant's traffic goes.

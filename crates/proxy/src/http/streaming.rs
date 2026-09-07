@@ -1,6 +1,6 @@
 //! Streaming response stub (concatenate chunks + telemetry).
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// One chunk of a streamed response.

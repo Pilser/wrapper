@@ -106,7 +106,7 @@ async fn async_main() -> anyhow::Result<()> {
         .emit();
 
     // 8. network::ip_pool::init() → load IP range from config.
-    let net_cfg = core::NetworkConfig {
+    let net_cfg = shared::NetworkConfig {
         ip_range: cfg.network.ip_range.clone(),
         gateway: cfg.network.gateway.clone(),
         netmask: String::new(),

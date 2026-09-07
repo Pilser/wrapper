@@ -6,7 +6,7 @@
 //! stays on the host), boot the new template with the same data disk, and
 //! deploy the new category's package.
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Input for [`change_category`].
@@ -41,7 +41,7 @@ pub async fn change_category(
         .map_err(|e| Error::Database(e.to_string()))?
         .ok_or_else(|| Error::NotFound(format!("tenant {}", input.tenant_id)))?;
     tenant.category_id = input.new_category_id.clone();
-    tenant.category_changed_at = Some(core::now_rfc3339());
+    tenant.category_changed_at = Some(shared::now_rfc3339());
     db::global::tenants::update(&conn, &tenant)
         .await
         .map_err(|e| Error::Database(e.to_string()))?;
@@ -50,7 +50,7 @@ pub async fn change_category(
         tenant_id: input.tenant_id.clone(),
         category_id: input.new_category_id.clone(),
         assigned_by: None,
-        assigned_at: core::now_rfc3339(),
+        assigned_at: shared::now_rfc3339(),
         migrated: input.migrate_vm,
         notes: None,
     };

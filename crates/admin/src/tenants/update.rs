@@ -1,6 +1,6 @@
 //! Update a tenant (row in the global `tenants` table).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Patch for [`update_tenant`]; `None` fields are left unchanged.

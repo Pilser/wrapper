@@ -1,6 +1,6 @@
 //! HTTP body helpers.
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 
 /// Collect an incoming request body into bytes.
 pub async fn read_body(

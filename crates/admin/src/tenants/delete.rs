@@ -1,7 +1,7 @@
 //! Delete a tenant: release real `sessions` / `networks` rows, delete the
 //! `tenants` row, then emit `admin.tenant.deleted`.
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Clear the tenant's sessions and network reservations, delete the tenant

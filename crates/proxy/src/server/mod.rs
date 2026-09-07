@@ -8,7 +8,7 @@ pub use shutdown::GracefulShutdown;
 pub use tcp::TcpAcceptor;
 pub use tls::TlsConfig;
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use telemetry::{Level, Telemetry};
 
 /// Hyper-based reverse-proxy server.

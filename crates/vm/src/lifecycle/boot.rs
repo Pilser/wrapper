@@ -1,6 +1,6 @@
 //! Boot sequence for a microVM.
 
-use core::{Error as CoreError, VmTemplate};
+use shared::{Error as CoreError, VmTemplate};
 use telemetry::{Level, Telemetry};
 
 use crate::firecracker::boot_source::boot_source;
@@ -14,7 +14,7 @@ pub async fn boot_vm(
     client: &FirecrackerClient,
     tenant_id: &str,
     template: &VmTemplate,
-) -> core::Result<()> {
+) -> shared::Result<()> {
     telemetry
         .builder()
         .level(Level::Info)
@@ -62,7 +62,7 @@ async fn boot_vm_inner(
     machine: &MachineConfig,
     boot_cfg: &crate::firecracker::BootSourceConfig,
     root: &crate::firecracker::config::DriveConfig,
-) -> core::Result<()> {
+) -> shared::Result<()> {
     let machine_body =
         serde_json::to_value(machine).map_err(|e| CoreError::Vm(e.to_string()))?;
     client

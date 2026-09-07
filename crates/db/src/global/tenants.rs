@@ -1,6 +1,6 @@
 //! CRUD for the `tenants` table.
 
-use core::Tenant;
+use shared::Tenant;
 use telemetry::{Level, Telemetry};
 use turso::Connection;
 
@@ -38,21 +38,21 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> anyhow::Result<Option<Ten
         vm_process_id: row.get_value(6).ok().and_then(|v| v.as_integer().copied()),
         vm_template_id: Some(text(7)).filter(|s| !s.is_empty()),
         tap_device: Some(text(8)).filter(|s| !s.is_empty()),
-        status: core::TenantStatus::Active,
+        status: shared::TenantStatus::Active,
         db_path: text(10), created_at: text(11),
         last_login: Some(text(12)).filter(|s| !s.is_empty()),
         category_changed_at: Some(text(13)).filter(|s| !s.is_empty()),
     }))
 }
 
-fn parse_status(s: &str) -> core::TenantStatus {
+fn parse_status(s: &str) -> shared::TenantStatus {
     match s {
-        "suspended" => core::TenantStatus::Suspended,
-        "booting" => core::TenantStatus::Booting,
-        "ready" => core::TenantStatus::Ready,
-        "asleep" => core::TenantStatus::Asleep,
-        "deleted" => core::TenantStatus::Deleted,
-        _ => core::TenantStatus::Active,
+        "suspended" => shared::TenantStatus::Suspended,
+        "booting" => shared::TenantStatus::Booting,
+        "ready" => shared::TenantStatus::Ready,
+        "asleep" => shared::TenantStatus::Asleep,
+        "deleted" => shared::TenantStatus::Deleted,
+        _ => shared::TenantStatus::Active,
     }
 }
 

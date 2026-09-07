@@ -1,6 +1,6 @@
 //! Upstream connection health checks via TCP connect probes.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Probes pooled upstreams; unhealthy entries are evicted by the pool.

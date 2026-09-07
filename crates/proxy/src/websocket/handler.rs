@@ -5,7 +5,7 @@
 //! and the upstream reply is returned to the client, with telemetry emitted
 //! for connect/message/failure points.
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use futures_util::{SinkExt, StreamExt};
 use telemetry::{Level, Telemetry};
 use tokio_tungstenite::tungstenite::Message;

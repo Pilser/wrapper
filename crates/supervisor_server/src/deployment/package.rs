@@ -1,4 +1,4 @@
-use core::{DeploymentManifest, Error, Result};
+use shared::{DeploymentManifest, Error, Result};
 use serde_json::Value;
 
 /// Wire format version of the deployment package exchange.

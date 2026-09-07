@@ -8,7 +8,7 @@ name = "vm"
 path = "src/lib.rs"
 
 [dependencies]
-core = { path = "../core" }
+shared = { path = "../shared" }
 telemetry = { path = "../telemetry" }
 network = { path = "../network" }
 serde = { workspace = true }

@@ -1,6 +1,6 @@
 //! Oversight reports for staff dashboards (stub).
 
-use core::now_rfc3339;
+use shared::now_rfc3339;
 use telemetry::{Level, Telemetry};
 
 /// A point-in-time oversight summary.

@@ -1,6 +1,6 @@
 //! Logical WebSocket stream stub (no real socket; telemetry only).
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// One logical client connection.

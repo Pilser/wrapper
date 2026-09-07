@@ -7,7 +7,7 @@
 //! ([`PooledConn::put_stream`]); [`PooledConn::probe`] runs a fresh TCP
 //! connect probe used by health checks.
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use std::sync::Arc;
 use std::time::Duration;
 use telemetry::{Level, Telemetry};
@@ -51,7 +51,7 @@ impl PooledConn {
         Ok(Self {
             id: uuid::Uuid::new_v4().to_string(),
             target_addr: target_addr.to_string(),
-            created_at: core::now_rfc3339(),
+            created_at: shared::now_rfc3339(),
             stream: Arc::new(Mutex::new(Some(stream))),
         })
     }

@@ -1,6 +1,6 @@
 //! WebSocket ping/pong keepalive stub.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Tracks the last pong; stub only.
@@ -33,6 +33,6 @@ impl PingTracker {
     }
 
     pub fn on_pong(&mut self) {
-        self.last_pong = Some(core::now_rfc3339());
+        self.last_pong = Some(shared::now_rfc3339());
     }
 }

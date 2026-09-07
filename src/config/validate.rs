@@ -1,6 +1,6 @@
 //! Validate a parsed [`super::Config`].
 
-use core::{Error, Result};
+use shared::{Error, Result};
 
 use super::Config;
 

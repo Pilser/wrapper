@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 
@@ -24,7 +24,7 @@ pub async fn handle_profile_call(
     let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("get");
     let result = match op {
         "update" | "set" | "upsert" => {
-            let now = core::now_rfc3339();
+            let now = shared::now_rfc3339();
             let existing = db::tenant::profile::get(&conn, tenant_id)
                 .await
                 .map_err(|e| Error::Database(e.to_string()))?;

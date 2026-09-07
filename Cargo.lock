@@ -9,11 +9,11 @@ dependencies = [
  "anyhow",
  "auth",
  "chrono",
- "core",
  "db",
  "network",
  "serde",
  "serde_json",
+ "shared",
  "supervisor_server",
  "telemetry",
  "tokio",
@@ -126,7 +126,6 @@ dependencies = [
  "anyhow",
  "auth",
  "bytes",
- "core",
  "db",
  "futures-util",
  "http-body-util",
@@ -137,6 +136,7 @@ dependencies = [
  "proxy",
  "serde",
  "serde_json",
+ "shared",
  "supervisor_server",
  "telemetry",
  "tokio",
@@ -203,13 +203,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "core",
  "db",
  "hmac",
  "serde",
  "serde_json",
  "sha1",
  "sha2",
+ "shared",
  "telemetry",
  "tokio",
  "uuid",
@@ -470,19 +470,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -646,9 +633,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "core",
  "serde",
  "serde_json",
+ "shared",
  "telemetry",
  "tokio",
  "turso",
@@ -1695,9 +1682,9 @@ name = "network"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "core",
  "serde",
  "serde_json",
+ "shared",
  "telemetry",
  "tokio",
  "uuid",
@@ -1859,10 +1846,10 @@ name = "plugin_host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "core",
  "libloading",
  "serde",
  "serde_json",
+ "shared",
  "telemetry",
  "tokio",
  "uuid",
@@ -1979,7 +1966,6 @@ dependencies = [
  "anyhow",
  "auth",
  "bytes",
- "core",
  "db",
  "futures-util",
  "http-body-util",
@@ -1987,6 +1973,7 @@ dependencies = [
  "hyper-util",
  "serde",
  "serde_json",
+ "shared",
  "telemetry",
  "tokio",
  "tokio-tungstenite",
@@ -2533,6 +2520,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "shared"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2679,10 +2679,10 @@ dependencies = [
  "anyhow",
  "auth",
  "chrono",
- "core",
  "db",
  "serde",
  "serde_json",
+ "shared",
  "telemetry",
  "tokio",
  "uuid",
@@ -2917,10 +2917,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "core",
  "futures-util",
  "serde",
  "serde_json",
+ "shared",
  "tokio",
  "tokio-tungstenite",
  "toml",
@@ -3639,10 +3639,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "core",
  "network",
  "serde",
  "serde_json",
+ "shared",
  "telemetry",
  "tokio",
  "uuid",
@@ -3973,10 +3973,10 @@ dependencies = [
  "anyhow",
  "api",
  "chrono",
- "core",
  "reqwest",
  "serde",
  "serde_json",
+ "shared",
  "telemetry",
  "tokio",
  "turso",

@@ -1,6 +1,6 @@
 //! Bulk tenant operations (real writes, one aggregate telemetry event).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Move many tenants to one category via `db::global::tenants::update`
@@ -23,7 +23,7 @@ pub async fn bulk_update_category(
         ));
     }
     let conn = db.conn().map_err(|e| Error::Database(e.to_string()))?;
-    let now = core::now_rfc3339();
+    let now = shared::now_rfc3339();
     let mut changed = 0usize;
     for tenant_id in tenant_ids {
         let Some(mut tenant) = db::global::tenants::get_by_id(&conn, tenant_id)

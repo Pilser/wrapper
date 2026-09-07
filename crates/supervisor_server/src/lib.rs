@@ -7,7 +7,7 @@ pub mod tools;
 
 pub use protocol::message::Envelope;
 
-use core::{Error, Result};
+use shared::{Error, Result};
 
 /// Configuration for the supervisor TCP listener.
 /// Mirrors `[supervisor_server]` in `config.toml`.

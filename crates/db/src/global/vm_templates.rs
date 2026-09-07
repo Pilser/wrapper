@@ -1,6 +1,6 @@
 //! CRUD for the `vm_templates` table.
 
-use core::VmTemplate;
+use shared::VmTemplate;
 use turso::Connection;
 
 pub async fn insert(conn: &Connection, t: &VmTemplate) -> anyhow::Result<()> {
@@ -31,7 +31,7 @@ pub async fn list(conn: &Connection) -> anyhow::Result<Vec<VmTemplate>> {
             rootfs_path: text(3), kernel_path: text(4),
             vcpu_count: integer(5) as u32, memory_mb: integer(6) as u32,
             requires_gpu: integer(7) != 0,
-            status: core::VmTemplateStatus::Active,
+            status: shared::VmTemplateStatus::Active,
             created_at: text(9), updated_at: text(10),
         });
     }

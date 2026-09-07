@@ -13,7 +13,7 @@ pub async fn migrate_vm(
     vm_id: &str,
     snapshot_path: &str,
     mem_file_path: &str,
-) -> core::Result<()> {
+) -> shared::Result<()> {
     telemetry.builder().level(Level::Info).kind("vm.migrate.started").category("vm")
         .vm_id(Some(vm_id.to_string()))
         .message("migrate started").emit();
@@ -49,7 +49,7 @@ async fn migrate_inner(
     vm_id: &str,
     snapshot_path: &str,
     mem_file_path: &str,
-) -> core::Result<()> {
+) -> shared::Result<()> {
     snapshot_vm(telemetry, source_client, vm_id, snapshot_path, mem_file_path).await?;
     restore_vm(telemetry, target_client, vm_id, snapshot_path, mem_file_path).await?;
     Ok(())

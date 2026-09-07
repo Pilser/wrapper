@@ -1,6 +1,6 @@
 //! CRUD for the `sessions` table.
 
-use core::Session;
+use shared::Session;
 use turso::Connection;
 
 pub async fn insert(conn: &Connection, s: &Session) -> anyhow::Result<()> {

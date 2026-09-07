@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use core::{VmInfo, VmState};
+use shared::{VmInfo, VmState};
 
 /// In-memory map tenant_id -> VM info.
 #[derive(Clone, Default)]

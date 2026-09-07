@@ -1,6 +1,6 @@
 //! WebSocket upgrade detection stub.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// True when the request asks for a WebSocket upgrade.

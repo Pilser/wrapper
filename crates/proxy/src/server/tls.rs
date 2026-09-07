@@ -10,7 +10,7 @@
 //! serving mode; a config carrying cert/key paths is rejected loudly by
 //! [`TlsConfig::describe`] instead of silently serving plaintext.
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use telemetry::{Level, Telemetry};
 
 /// TLS settings. `None` paths mean plain-TCP mode (the only serving mode).

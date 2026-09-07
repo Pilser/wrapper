@@ -1,6 +1,6 @@
 //! Update a VM template (row in the global `vm_templates` table).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Patch for [`update_template`]; `None` fields are left unchanged.
@@ -54,7 +54,7 @@ pub async fn update_template(
     if let Some(memory_mb) = patch.memory_mb {
         template.memory_mb = memory_mb;
     }
-    template.updated_at = core::now_rfc3339();
+    template.updated_at = shared::now_rfc3339();
     super::validate::validate_template(&template)?;
     db::global::vm_templates::update(&conn, &template)
         .await

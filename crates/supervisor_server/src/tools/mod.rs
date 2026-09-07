@@ -16,7 +16,7 @@ pub use reports::handle_reports_call;
 pub use skills::handle_skills_call;
 pub use tenant::handle_tenant_call;
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde_json::Value;
 use telemetry::Telemetry;
 

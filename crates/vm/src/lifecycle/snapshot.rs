@@ -10,14 +10,14 @@ pub async fn snapshot_vm(
     vm_id: &str,
     snapshot_path: &str,
     mem_file_path: &str,
-) -> core::Result<()> {
+) -> shared::Result<()> {
     telemetry.builder().level(Level::Info).kind("vm.snapshot.started").category("vm")
         .vm_id(Some(vm_id.to_string()))
         .message("snapshot started").emit();
     let result = client
         .create_snapshot(snapshot_path, mem_file_path)
         .await
-        .map_err(|e| core::Error::Vm(e.to_string()));
+        .map_err(|e| shared::Error::Vm(e.to_string()));
     match result {
         Ok(_) => {
             telemetry.builder().level(Level::Info).kind("vm.snapshot.completed").category("vm")

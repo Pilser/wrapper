@@ -8,7 +8,7 @@ impl PluginRegistry {
         self.plugins.get(name)
     }
 
-    pub fn plugin_type(&self, name: &str) -> Option<core::PluginType> {
+    pub fn plugin_type(&self, name: &str) -> Option<shared::PluginType> {
         self.plugins.get(name).map(|p| p.info.plugin_type)
     }
 }

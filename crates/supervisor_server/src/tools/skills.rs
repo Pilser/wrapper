@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 
@@ -39,7 +39,7 @@ pub async fn handle_skills_call(
                 confidence: super::float_arg(payload, "confidence").unwrap_or(0.5),
                 last_practiced: super::str_arg(payload, "last_practiced")
                     .map(|s| s.to_string()),
-                created_at: core::now_rfc3339(),
+                created_at: shared::now_rfc3339(),
             };
             db::tenant::skills::insert(&conn, &row)
                 .await

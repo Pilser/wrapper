@@ -8,7 +8,7 @@ name = "auth"
 path = "src/lib.rs"
 
 [dependencies]
-core = { path = "../core" }
+shared = { path = "../shared" }
 telemetry = { path = "../telemetry" }
 db = { path = "../db" }
 serde = { workspace = true }

@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -23,7 +23,7 @@ impl Envelope {
         Self {
             msg_type: msg_type.into(),
             tenant_id: tenant_id.into(),
-            timestamp: core::now_rfc3339(),
+            timestamp: shared::now_rfc3339(),
             payload,
         }
     }

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use core::NetworkConfig;
+use shared::NetworkConfig;
 use telemetry::Telemetry;
 
 /// A pool of allocatable tenant IPs drawn from `[network] ip_range`.

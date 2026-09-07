@@ -1,6 +1,6 @@
 //! The VM manager: boot/teardown orchestration.
 
-use core::VmTemplate;
+use shared::VmTemplate;
 use telemetry::Telemetry;
 
 use crate::firecracker::FirecrackerClient;

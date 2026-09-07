@@ -1,6 +1,6 @@
 //! Validate a VM template before registration.
 
-use core::VmTemplate;
+use shared::VmTemplate;
 
 pub fn validate(t: &VmTemplate) -> anyhow::Result<()> {
     if t.id.is_empty() {

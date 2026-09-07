@@ -28,7 +28,7 @@ pub fn link_account(
                 .message(format!("oauth link with empty {name}"))
                 .emit();
             return Err(
-                core::Error::InvalidInput(format!("oauth link {name} must not be empty")).into(),
+                shared::Error::InvalidInput(format!("oauth link {name} must not be empty")).into(),
             );
         }
     }

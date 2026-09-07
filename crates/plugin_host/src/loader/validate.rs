@@ -1,6 +1,6 @@
 //! Validate a plugin's metadata before registering it.
 
-use core::{PluginInfo, PluginType};
+use shared::{PluginInfo, PluginType};
 
 use super::symbols::REQUIRED_SYMBOLS;
 

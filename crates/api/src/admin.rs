@@ -20,7 +20,7 @@ impl AdminApi {
     pub async fn list_categories(
         &self,
         gdb: &db::GlobalDb,
-    ) -> core::Result<Vec<core::Category>> {
+    ) -> shared::Result<Vec<shared::Category>> {
         admin::categories::list_categories(gdb).await
     }
 }

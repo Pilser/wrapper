@@ -1,6 +1,6 @@
 //! Firewall rule helpers.
 
-use core::{FirewallAction, FirewallRule};
+use shared::{FirewallAction, FirewallRule};
 
 /// Build a deny rule restricting a VM's traffic.
 pub fn deny_all(src: &str) -> FirewallRule {

@@ -1,6 +1,6 @@
 //! Database handle for plugins (delegates to the `db` crate).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 
 /// Thin wrapper exposing the global database to plugins.
 #[derive(Clone, Debug)]
@@ -30,7 +30,7 @@ impl DbApi {
         &self,
         gdb: &db::GlobalDb,
         tenant_id: &str,
-    ) -> Result<Option<core::Tenant>> {
+    ) -> Result<Option<shared::Tenant>> {
         let conn = gdb.conn().map_err(|e| Error::Database(e.to_string()))?;
         db::global::tenants::get_by_id(&conn, tenant_id)
             .await

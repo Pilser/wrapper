@@ -1,6 +1,6 @@
 //! Dashboard statistics (live aggregates over the global database).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 
 /// Fleet-wide counters shown on the admin dashboard.
 #[derive(Debug, Clone, Default)]

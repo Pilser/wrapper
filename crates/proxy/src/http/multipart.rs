@@ -1,6 +1,6 @@
 //! Multipart form-data stubs.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// One parsed multipart field (stub: caller fills it in).

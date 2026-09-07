@@ -1,6 +1,6 @@
 //! Create a category (row in the global `categories` table).
 
-use core::{now_rfc3339, Category, CategoryStatus, Error, Result};
+use shared::{now_rfc3339, Category, CategoryStatus, Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Input for [`create_category`].

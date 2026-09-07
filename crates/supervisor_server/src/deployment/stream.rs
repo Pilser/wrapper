@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use telemetry::{Level, Telemetry};

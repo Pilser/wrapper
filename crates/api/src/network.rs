@@ -1,6 +1,6 @@
 //! Network handle for plugins (delegates to the `network` crate).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 
 /// Thin wrapper exposing virtual networking to plugins.
 #[derive(Clone, Debug)]
@@ -14,7 +14,7 @@ impl NetworkApi {
     }
 
     /// Build the underlying [`network::NetworkManager`].
-    pub fn manager(&self, cfg: core::NetworkConfig) -> Result<network::NetworkManager> {
+    pub fn manager(&self, cfg: shared::NetworkConfig) -> Result<network::NetworkManager> {
         network::NetworkManager::with_telemetry(cfg, self.telemetry.clone())
             .map_err(|e| Error::Network(e.to_string()))
     }

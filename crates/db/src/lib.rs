@@ -38,5 +38,5 @@ impl Db {
 
 /// Current RFC3339 timestamp.
 pub fn now_str() -> String {
-    core::now_rfc3339()
+    shared::now_rfc3339()
 }

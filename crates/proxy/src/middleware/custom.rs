@@ -1,6 +1,6 @@
 //! Plugin-supplied custom middleware stub.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Named hook holder for plugin middleware.

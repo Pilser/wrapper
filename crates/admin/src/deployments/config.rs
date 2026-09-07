@@ -1,6 +1,6 @@
 //! Configure a deployment entry (one row of `deployment_configs`).
 
-use core::{now_rfc3339, DeploymentConfig, Error, Result};
+use shared::{now_rfc3339, DeploymentConfig, Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Input for [`configure_deployment`]; mirrors one row of the

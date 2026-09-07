@@ -8,14 +8,14 @@ pub async fn reboot_vm(
     telemetry: &Telemetry,
     client: &FirecrackerClient,
     tenant_id: &str,
-) -> core::Result<()> {
+) -> shared::Result<()> {
     telemetry.builder().level(Level::Info).kind("vm.reboot.started").category("vm")
         .tenant_id(Some(tenant_id.to_string()))
         .message("reboot started").emit();
     let result = client
         .put_action("SendCtrlAltDel")
         .await
-        .map_err(|e| core::Error::Vm(e.to_string()));
+        .map_err(|e| shared::Error::Vm(e.to_string()));
     match result {
         Ok(_) => {
             telemetry.builder().level(Level::Info).kind("vm.reboot.completed").category("vm")

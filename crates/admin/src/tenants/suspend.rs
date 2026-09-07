@@ -1,6 +1,6 @@
 //! Suspend a tenant (flips the `tenants` row status to `suspended`).
 
-use core::{Error, Result, TenantStatus};
+use shared::{Error, Result, TenantStatus};
 use telemetry::{Level, Telemetry};
 
 /// Set the tenant status to `suspended` via `db::global::tenants::update`

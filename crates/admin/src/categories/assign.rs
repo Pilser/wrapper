@@ -1,7 +1,7 @@
 //! Assign a tenant to a category (row in `category_assignments` plus the
 //! tenant's own `category_id`).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// One row of the `category_assignments` table.
@@ -37,7 +37,7 @@ pub async fn assign_category(
         tenant_id: assignment.tenant_id.clone(),
         category_id: assignment.category_id.clone(),
         assigned_by: assignment.assigned_by.clone(),
-        assigned_at: core::now_rfc3339(),
+        assigned_at: shared::now_rfc3339(),
         migrated: false,
         notes: assignment.notes.clone(),
     };
@@ -49,7 +49,7 @@ pub async fn assign_category(
         .map_err(|e| Error::Database(e.to_string()))?
         .ok_or_else(|| Error::NotFound(format!("tenant {}", assignment.tenant_id)))?;
     tenant.category_id = assignment.category_id.clone();
-    tenant.category_changed_at = Some(core::now_rfc3339());
+    tenant.category_changed_at = Some(shared::now_rfc3339());
     db::global::tenants::update(&conn, &tenant)
         .await
         .map_err(|e| Error::Database(e.to_string()))?;

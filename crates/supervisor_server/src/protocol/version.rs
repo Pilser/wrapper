@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 
 pub const PROTOCOL_VERSION: &str = "1.0";
 pub const MIN_COMPATIBLE_VERSION: &str = "1.0";

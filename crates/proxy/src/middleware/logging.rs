@@ -1,6 +1,6 @@
 //! Request logging middleware stub.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Emits one telemetry event per request.

@@ -1,6 +1,6 @@
 //! Fixed-window in-memory rate limiter stub.
 
-use core::{Error as WrapperError, Result};
+use shared::{Error as WrapperError, Result};
 use std::collections::HashMap;
 use telemetry::{Level, Telemetry};
 

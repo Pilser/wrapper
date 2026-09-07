@@ -1,6 +1,6 @@
 //! Create a tap device.
 
-use core::TapDevice;
+use shared::TapDevice;
 
 use super::configure::attach_tap_to_bridge;
 

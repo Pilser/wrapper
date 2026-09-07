@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use core::PluginInfo;
+use shared::PluginInfo;
 use libloading::Library;
 use telemetry::{Level, Telemetry};
 

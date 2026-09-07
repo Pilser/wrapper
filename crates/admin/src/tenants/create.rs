@@ -1,6 +1,6 @@
 //! Create a tenant (row in the global `tenants` table).
 
-use core::{now_rfc3339, Error, Result, Tenant, TenantStatus};
+use shared::{now_rfc3339, Error, Result, Tenant, TenantStatus};
 use telemetry::{Level, Telemetry};
 
 /// Input for [`create_tenant`].

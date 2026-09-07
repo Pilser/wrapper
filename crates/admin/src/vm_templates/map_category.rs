@@ -1,6 +1,6 @@
 //! Map a category to its VM template (updates the category row).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Set `category_id`'s `vm_template_id` to `template_id` via
@@ -29,7 +29,7 @@ pub async fn map_category_to_template(
         .find(|c| c.id == category_id)
         .ok_or_else(|| Error::NotFound(format!("category {category_id}")))?;
     category.vm_template_id = template_id.to_string();
-    category.updated_at = core::now_rfc3339();
+    category.updated_at = shared::now_rfc3339();
     db::global::categories::update(&conn, &category)
         .await
         .map_err(|e| Error::Database(e.to_string()))?;

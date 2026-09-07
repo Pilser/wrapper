@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 
 use super::version::{MIN_COMPATIBLE_VERSION, PROTOCOL_VERSION, parse_version};
 

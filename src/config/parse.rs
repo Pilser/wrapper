@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use core::{Error, Result};
+use shared::{Error, Result};
 
 use super::Config;
 

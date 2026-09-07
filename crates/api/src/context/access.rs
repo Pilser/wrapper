@@ -1,7 +1,7 @@
 //! Access checks for plugin calls.
 
 use super::ApiContext;
-use core::{Error, Result};
+use shared::{Error, Result};
 
 /// Stub gate: rejects empty resources; otherwise allows the call.
 pub fn check_access(ctx: &ApiContext, resource: &str) -> Result<()> {

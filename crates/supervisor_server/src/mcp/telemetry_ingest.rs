@@ -1,4 +1,4 @@
-use core::Result;
+use shared::Result;
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 

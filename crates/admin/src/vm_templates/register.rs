@@ -1,6 +1,6 @@
 //! Register a VM template (row in the global `vm_templates` table).
 
-use core::{now_rfc3339, Error, Result, VmTemplate, VmTemplateStatus};
+use shared::{now_rfc3339, Error, Result, VmTemplate, VmTemplateStatus};
 use telemetry::{Level, Telemetry};
 
 use super::validate::validate_template;

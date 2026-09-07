@@ -1,6 +1,6 @@
 //! Read `config.toml` from disk, then parse and validate it.
 
-use core::{Error, Result};
+use shared::{Error, Result};
 
 use super::{parse::parse, validate::validate, Config};
 

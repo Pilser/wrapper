@@ -1,6 +1,6 @@
 //! List tap devices from `/proc/net/dev`.
 
-use core::TapDevice;
+use shared::TapDevice;
 
 pub fn list_taps() -> anyhow::Result<Vec<TapDevice>> {
     let content = std::fs::read_to_string("/proc/net/dev")?;

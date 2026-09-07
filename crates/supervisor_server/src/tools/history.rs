@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 
@@ -36,7 +36,7 @@ pub async fn handle_history_call(
                 domain: super::str_arg(payload, "domain").map(|s| s.to_string()),
                 summary: super::str_arg(payload, "summary").map(|s| s.to_string()),
                 duration_seconds: super::int_arg(payload, "duration_seconds"),
-                created_at: core::now_rfc3339(),
+                created_at: shared::now_rfc3339(),
             };
             db::tenant::history::insert(&conn, &row)
                 .await

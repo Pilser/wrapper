@@ -1,6 +1,6 @@
 //! Health checks for the admin dashboard (live global-DB probe).
 
-use core::Error;
+use shared::Error;
 
 /// Result of a health sweep over wrapper subsystems.
 #[derive(Debug, Clone)]

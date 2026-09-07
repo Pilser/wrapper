@@ -1,4 +1,4 @@
-use core::{Error, Result};
+use shared::{Error, Result};
 use serde_json::Value;
 use telemetry::{Level, Telemetry};
 
@@ -6,7 +6,7 @@ use super::package::parse_package;
 use super::verify::{emit_verified, verify_package};
 
 /// Handle a supervisor `deployment.ack` / `deployment.received` envelope.
-/// The payload carries the [`core::DeploymentManifest`] being acknowledged.
+/// The payload carries the [`shared::DeploymentManifest`] being acknowledged.
 pub async fn handle_deployment_receive(
     tenant_id: &str,
     payload: &Value,

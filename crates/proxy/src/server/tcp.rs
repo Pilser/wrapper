@@ -1,6 +1,6 @@
 //! Plain-TCP listener for the proxy.
 
-use core::Result;
+use shared::Result;
 use telemetry::{Level, Telemetry};
 
 /// Binds a [`tokio::net::TcpListener`] for the proxy server.

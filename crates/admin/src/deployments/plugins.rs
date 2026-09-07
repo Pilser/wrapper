@@ -1,7 +1,7 @@
 //! Supervisor / agent plugins shipped in a deployment package (rows of
 //! `deployment_configs` with `config_type = "plugin"`).
 
-use core::{DeploymentConfig, Error, Result};
+use shared::{DeploymentConfig, Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// A plugin artifact (`.so`) deployed to the supervisor or the agent.
@@ -30,7 +30,7 @@ pub async fn add_plugin(
             "plugin name must not be empty".into(),
         ));
     }
-    let now = core::now_rfc3339();
+    let now = shared::now_rfc3339();
     let entry = DeploymentConfig {
         id: format!("dep_{}", uuid::Uuid::new_v4()),
         category_id: category_id.to_string(),

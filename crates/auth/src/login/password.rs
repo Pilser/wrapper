@@ -26,7 +26,7 @@ const N_ITERATIONS: u32 = 100_000;
 /// Rejects empty passwords with an `InvalidInput` error.
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     if password.is_empty() {
-        return Err(core::Error::InvalidInput("password must not be empty".into()).into());
+        return Err(shared::Error::InvalidInput("password must not be empty".into()).into());
     }
     let salt = uuid::Uuid::new_v4().simple().to_string();
     Ok(format!("{ALGORITHM}${salt}${}", stretch(password, &salt)))
@@ -41,13 +41,13 @@ pub fn verify_password(password: &str, hash: &str) -> anyhow::Result<bool> {
     let (algo, salt, expected_hex) = split_hash(hash)?;
     if algo != ALGORITHM {
         return Err(
-            core::Error::InvalidInput(format!("unsupported password hash algorithm `{algo}`"))
+            shared::Error::InvalidInput(format!("unsupported password hash algorithm `{algo}`"))
                 .into(),
         );
     }
     let expected = hex_decode(expected_hex)?;
     if expected.len() != 32 {
-        return Err(core::Error::InvalidInput("malformed password hash".into()).into());
+        return Err(shared::Error::InvalidInput("malformed password hash".into()).into());
     }
     let actual = hex_decode(&stretch(password, salt))?;
     Ok(constant_time_eq(&expected, &actual))
@@ -76,7 +76,7 @@ fn split_hash(hash: &str) -> anyhow::Result<(&str, &str, &str)> {
         (Some(algo), Some(salt), Some(hex)) if !algo.is_empty() && !salt.is_empty() && !hex.is_empty() => {
             Ok((algo, salt, hex))
         }
-        _ => Err(core::Error::InvalidInput("malformed password hash".into()).into()),
+        _ => Err(shared::Error::InvalidInput("malformed password hash".into()).into()),
     }
 }
 
@@ -104,7 +104,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode(hex: &str) -> anyhow::Result<Vec<u8>> {
     if hex.len() % 2 != 0 {
-        return Err(core::Error::InvalidInput("malformed password hash".into()).into());
+        return Err(shared::Error::InvalidInput("malformed password hash".into()).into());
     }
     let mut out = Vec::with_capacity(hex.len() / 2);
     let bytes = hex.as_bytes();
@@ -121,6 +121,6 @@ fn hex_val(c: u8) -> anyhow::Result<u8> {
         b'0'..=b'9' => Ok(c - b'0'),
         b'a'..=b'f' => Ok(c - b'a' + 10),
         b'A'..=b'F' => Ok(c - b'A' + 10),
-        _ => Err(core::Error::InvalidInput("malformed password hash".into()).into()),
+        _ => Err(shared::Error::InvalidInput("malformed password hash".into()).into()),
     }
 }

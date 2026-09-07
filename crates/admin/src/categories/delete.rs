@@ -1,6 +1,6 @@
 //! Delete a category (row in the global `categories` table).
 
-use core::{Error, Result};
+use shared::{Error, Result};
 use telemetry::{Level, Telemetry};
 
 /// Delete the row via `db::global::categories::delete` and emit
