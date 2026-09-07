@@ -52,3 +52,13 @@ libloading = "0.8"
 sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+debug = false
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

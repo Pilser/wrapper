@@ -21,6 +21,14 @@
 !*.md
 !*.txt
 
+# Track build config + CI
+!.cargo/
+!.cargo/config.toml
+!.github/
+!.github/workflows/
+!.github/workflows/ci.yml
+!rust-toolchain.toml
+
 # Track this gitignore
 !.gitignore
 

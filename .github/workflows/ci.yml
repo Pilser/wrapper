@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Install wild linker
+        run: |
+          curl -sL https://github.com/wild-linker/wild/releases/download/0.10.0/wild-linker-0.10.0-x86_64-unknown-linux-gnu.tar.gz | tar xz -C /tmp
+          sudo cp /tmp/wild-linker-0.10.0-x86_64-unknown-linux-gnu/wild /usr/local/bin/wild
+          sudo ln -sf /usr/local/bin/wild /usr/local/bin/ld.wild
+          wild --version
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Shared cache across branches — main/master warms, PRs restore
+          shared-key: "ci"
+          # Don't thrash cache on every PR push
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: cargo check
+        run: cargo check --workspace --all-targets
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      # Release artifact on main/master (expensive — skip on PRs)
+      - name: cargo build (release)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+        run: cargo build -p wrapper --release
+
+      - name: Upload wrapper binary
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrapper-linux-x86_64
+          path: target/release/wrapper
+          retention-days: 14
+          if-no-files-found: error
