@@ -1,7 +1,7 @@
 //! Polls the plugin folder and reports changed plugins.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Watches a folder, returning plugin filenames whose mtime changed.

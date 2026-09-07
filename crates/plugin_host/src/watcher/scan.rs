@@ -1,6 +1,5 @@
 //! Scan helpers (full rescan triggered by watcher events).
 
-use std::path::Path;
 
 use super::folder::FolderWatcher;
 

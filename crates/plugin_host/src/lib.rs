@@ -9,7 +9,6 @@ pub mod registry;
 pub mod sandbox;
 pub mod watcher;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 

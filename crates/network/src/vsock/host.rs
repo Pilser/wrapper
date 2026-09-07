@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use super::config::VsockConfig;
 
 /// Host-side vsock registry (guest CID -> listening socket path).
 #[derive(Debug, Default, Clone)]
