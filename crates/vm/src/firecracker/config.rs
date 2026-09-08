@@ -2,10 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Boot source (kernel + rootfs) configuration for a microVM.
+/// Boot source (kernel + initrd) configuration for a microVM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootSourceConfig {
     pub kernel_image_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initrd_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub boot_args: Option<String>,
 }

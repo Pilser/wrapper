@@ -26,7 +26,7 @@ pub async fn boot_vm(
         .emit();
 
     let machine = MachineConfig::new(template.vcpu_count, template.memory_mb);
-    let boot_cfg = boot_source(&template.kernel_path);
+    let boot_cfg = boot_source(&template.kernel_path, &template.initrd_path);
     let root = root_drive(&template.rootfs_path);
 
     let result = boot_vm_inner(client, &machine, &boot_cfg, &root).await;

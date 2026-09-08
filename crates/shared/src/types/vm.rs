@@ -32,6 +32,8 @@ pub struct VmTemplate {
     pub description: Option<String>,
     pub rootfs_path: String,
     pub kernel_path: String,
+    /// Path to the initramfs (cpio.gz) used as the guest root filesystem.
+    pub initrd_path: String,
     pub vcpu_count: u32,
     pub memory_mb: u32,
     pub requires_gpu: bool,

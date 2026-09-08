@@ -17,6 +17,7 @@ impl VmTemplateBuilder {
                 description: None,
                 rootfs_path: String::new(),
                 kernel_path: String::new(),
+                initrd_path: String::new(),
                 vcpu_count: 2,
                 memory_mb: 2048,
                 requires_gpu: false,
@@ -34,6 +35,11 @@ impl VmTemplateBuilder {
 
     pub fn kernel(mut self, path: impl Into<String>) -> Self {
         self.template.kernel_path = path.into();
+        self
+    }
+
+    pub fn initrd(mut self, path: impl Into<String>) -> Self {
+        self.template.initrd_path = path.into();
         self
     }
 

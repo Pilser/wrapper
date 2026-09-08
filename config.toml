@@ -37,7 +37,7 @@ enabled = true
 output = "both"
 
 [telemetry.disk]
-path = "/var/log/wrapper/telemetry"
+path = "log/telemetry"
 filename_pattern = "telemetry_{date}.json"
 buffer_size = 1000
 flush_interval_seconds = 5

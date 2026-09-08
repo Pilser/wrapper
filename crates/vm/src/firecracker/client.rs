@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time;
 
 /// Talks JSON over HTTP/1.1 to a Firecracker instance's control socket.
 pub struct FirecrackerClient {
@@ -15,6 +16,49 @@ impl FirecrackerClient {
 
     pub fn socket(&self) -> &str {
         &self.socket
+    }
+
+    /// Spawn the Firecracker process and wait until its API socket is ready.
+    ///
+    /// The process runs detached (its handle is leaked on purpose: the wrapper
+    /// tracks VMs by socket path, and Firecracker keeps running as long as the
+    /// host does). Returns a client bound to the socket once it exists.
+    pub async fn spawn_firecracker(
+        firecracker_bin: &str,
+        api_sock: impl AsRef<std::path::Path>,
+    ) -> anyhow::Result<Self> {
+        let sock = api_sock.as_ref();
+        // Remove a stale socket from a previous run.
+        if sock.exists() {
+            std::fs::remove_file(sock).map_err(|e| anyhow::anyhow!("remove stale sock: {e}"))?;
+        }
+        let sock_str = sock.to_string_lossy().to_string();
+        // SAFETY: we leak the child handle deliberately. The Firecracker
+        // process must outlive the wrapper's configuration calls; it is torn
+        // down explicitly via /actions or by killing the PID later.
+        let child = tokio::process::Command::new(firecracker_bin)
+            .arg("--api-sock")
+            .arg(&sock_str)
+            .arg("--id")
+            .arg(format!("fc_{}", std::process::id()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("spawn firecracker: {e}"))?;
+        // Keep the child running: forget the handle (we don't wait on it).
+        std::mem::forget(child);
+
+        // Wait for the API socket to appear (up to 5s).
+        for _ in 0..50 {
+            if sock.exists() {
+                return Ok(Self::new(sock_str));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Err(anyhow::anyhow!(
+            "firecracker socket {sock_str} did not appear"
+        ))
     }
 
     /// Send `method` to `path` with optional JSON body; returns the body.
