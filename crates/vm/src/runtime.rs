@@ -68,7 +68,7 @@ impl VmRuntime {
             .ip_pool
             .allocate(tenant_id)
             .await?
-            .ok_or_else(|| anyhow::bail!("IP pool exhausted"))?;
+            .ok_or_else(|| anyhow::anyhow!("IP pool exhausted"))?;
 
         // 4. Create + attach a tap device.
         let tap = format!("tap_{}", &tenant_id[..8]);
@@ -111,8 +111,9 @@ impl VmRuntime {
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         // 6. Record the network assignment + VM process in the DB.
-        db::global::networks::reserve(&self.db.conn()?, tenant_id, &ip, &tap).await?;
-        db::global::tenants::set_vm_address(&self.db.conn()?, tenant_id, &ip)?;
+        let conn = self.db.conn()?;
+        db::global::networks::reserve(&conn, tenant_id, &ip, &tap).await?;
+        db::global::tenants::set_vm_address(&conn, tenant_id, &ip).await?;
 
         let addr = format!("{ip}:{ZERO_WRAPPER_PORT}");
         self.telemetry
@@ -142,7 +143,7 @@ impl VmRuntime {
         let conn = self.db.conn()?;
         db::global::tenants::get_by_id(&conn, tenant_id)
             .await?
-            .ok_or_else(|| anyhow::bail!("tenant {tenant_id} not found"))
+            .ok_or_else(|| anyhow::anyhow!("tenant {tenant_id} not found"))
     }
 
     /// Resolve the tenant's category → VM template.
@@ -150,9 +151,9 @@ impl VmRuntime {
         let conn = self.db.conn()?;
         let category = db::global::categories::get_by_id(&conn, &tenant.category_id)
             .await?
-            .ok_or_else(|| anyhow::bail!("category {} not found", tenant.category_id))?;
+            .ok_or_else(|| anyhow::anyhow!("category {} not found", tenant.category_id))?;
         db::global::vm_templates::get_by_id(&conn, &category.vm_template_id)
             .await?
-            .ok_or_else(|| anyhow::bail!("vm template {} not found", category.vm_template_id))
+            .ok_or_else(|| anyhow::anyhow!("vm template {} not found", category.vm_template_id))
     }
 }
