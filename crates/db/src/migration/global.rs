@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS categories (
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS vm_templates (
     id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, description TEXT,
-    rootfs_path TEXT NOT NULL, kernel_path TEXT NOT NULL,
+    rootfs_path TEXT NOT NULL, kernel_path TEXT NOT NULL, initrd_path TEXT NOT NULL,
     vcpu_count INTEGER DEFAULT 2, memory_mb INTEGER DEFAULT 2048,
     requires_gpu INTEGER DEFAULT 0, status TEXT DEFAULT 'active',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);

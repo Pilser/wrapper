@@ -19,6 +19,11 @@ pub fn validate_template(template: &VmTemplate) -> Result<()> {
             "kernel_path must not be empty".into(),
         ));
     }
+    if template.initrd_path.trim().is_empty() {
+        return Err(Error::InvalidInput(
+            "initrd_path must not be empty".into(),
+        ));
+    }
     if template.vcpu_count == 0 {
         return Err(Error::InvalidInput(
             "vcpu_count must be greater than zero".into(),

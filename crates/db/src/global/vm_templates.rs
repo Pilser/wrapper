@@ -5,12 +5,12 @@ use turso::Connection;
 
 pub async fn insert(conn: &Connection, t: &VmTemplate) -> anyhow::Result<()> {
     conn.execute(
-        "INSERT INTO vm_templates (id, name, description, rootfs_path, kernel_path, vcpu_count, \
-         memory_mb, requires_gpu, status, created_at, updated_at) VALUES \
-         (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        "INSERT INTO vm_templates (id, name, description, rootfs_path, kernel_path, initrd_path, \
+         vcpu_count, memory_mb, requires_gpu, status, created_at, updated_at) VALUES \
+         (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         (
             t.id.as_str(), t.name.as_str(), t.description.as_deref().unwrap_or(""),
-            t.rootfs_path.as_str(), t.kernel_path.as_str(),
+            t.rootfs_path.as_str(), t.kernel_path.as_str(), t.initrd_path.as_str(),
             t.vcpu_count as i64, t.memory_mb as i64, t.requires_gpu as i64,
             t.status.as_str(), t.created_at.as_str(), t.updated_at.as_str(),
         ),
@@ -19,7 +19,7 @@ pub async fn insert(conn: &Connection, t: &VmTemplate) -> anyhow::Result<()> {
 }
 
 pub async fn list(conn: &Connection) -> anyhow::Result<Vec<VmTemplate>> {
-    let mut rows = conn.query("SELECT id, name, description, rootfs_path, kernel_path, \
+    let mut rows = conn.query("SELECT id, name, description, rootfs_path, kernel_path, initrd_path, \
         vcpu_count, memory_mb, requires_gpu, status, created_at, updated_at FROM vm_templates", ()).await?;
     let mut out = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -28,11 +28,11 @@ pub async fn list(conn: &Connection) -> anyhow::Result<Vec<VmTemplate>> {
         out.push(VmTemplate {
             id: text(0), name: text(1),
             description: Some(text(2)).filter(|s| !s.is_empty()),
-            rootfs_path: text(3), kernel_path: text(4),
-            vcpu_count: integer(5) as u32, memory_mb: integer(6) as u32,
-            requires_gpu: integer(7) != 0,
+            rootfs_path: text(3), kernel_path: text(4), initrd_path: text(5),
+            vcpu_count: integer(6) as u32, memory_mb: integer(7) as u32,
+            requires_gpu: integer(8) != 0,
             status: shared::VmTemplateStatus::Active,
-            created_at: text(9), updated_at: text(10),
+            created_at: text(10), updated_at: text(11),
         });
     }
     Ok(out)
@@ -41,11 +41,11 @@ pub async fn list(conn: &Connection) -> anyhow::Result<Vec<VmTemplate>> {
 pub async fn update(conn: &Connection, t: &VmTemplate) -> anyhow::Result<()> {
     conn.execute(
         "UPDATE vm_templates SET name = ?1, description = ?2, rootfs_path = ?3, kernel_path = ?4, \
-         vcpu_count = ?5, memory_mb = ?6, requires_gpu = ?7, status = ?8, updated_at = ?9 \
-         WHERE id = ?10",
+         initrd_path = ?5, vcpu_count = ?6, memory_mb = ?7, requires_gpu = ?8, status = ?9, \
+         updated_at = ?10 WHERE id = ?11",
         (
             t.name.as_str(), t.description.as_deref().unwrap_or(""),
-            t.rootfs_path.as_str(), t.kernel_path.as_str(),
+            t.rootfs_path.as_str(), t.kernel_path.as_str(), t.initrd_path.as_str(),
             t.vcpu_count as i64, t.memory_mb as i64, t.requires_gpu as i64,
             t.status.as_str(), t.updated_at.as_str(), t.id.as_str(),
         ),
