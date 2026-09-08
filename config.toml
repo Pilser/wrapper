@@ -6,6 +6,8 @@ port = 8080
 
 [firecracker]
 binary_path = "~/.local/bin/firecracker"
+kernel_path = "disks/vmlinux.bin"
+initrd_path = "disks/initramfs.cpio.gz"
 
 [network]
 ip_range = "172.16.0.0/12"
