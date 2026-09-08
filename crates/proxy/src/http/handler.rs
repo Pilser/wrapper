@@ -25,7 +25,7 @@ pub struct HttpHandler {
     telemetry: Telemetry,
     router: crate::routing::Router,
     lookup: crate::routing::VmLookup,
-    runtime: crate::runtime::VmRuntime,
+    runtime: vm::runtime::VmRuntime,
     middleware: crate::middleware::MiddlewareChain,
     request_transform: crate::transform::RequestTransform,
     response_transform: crate::transform::ResponseTransform,
@@ -45,7 +45,7 @@ impl std::fmt::Debug for HttpHandler {
 }
 
 impl HttpHandler {
-    pub fn new(telemetry: Telemetry, runtime: crate::runtime::VmRuntime) -> Self {
+    pub fn new(telemetry: Telemetry, runtime: vm::runtime::VmRuntime) -> Self {
         Self {
             router: crate::routing::Router::new(
                 crate::routing::vm_lookup::DEFAULT_TARGET,
@@ -71,7 +71,7 @@ impl HttpHandler {
         self
     }
 
-    pub fn with_runtime(mut self, runtime: crate::runtime::VmRuntime) -> Self {
+    pub fn with_runtime(mut self, runtime: vm::runtime::VmRuntime) -> Self {
         self.runtime = runtime;
         self
     }
@@ -141,7 +141,7 @@ impl HttpHandler {
         let upstream_addr = self.lookup.lookup(&tenant_id).await?;
         let upstream_addr = if upstream_addr == self.lookup.default_target() {
             self.runtime.ensure_running(&tenant_id).await.map_err(|e| {
-                crate::Error::Proxy(format!("wake VM for {tenant_id}: {e}"))
+                WrapperError::Proxy(format!("wake VM for {tenant_id}: {e}"))
             })?
         } else {
             upstream_addr

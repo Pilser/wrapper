@@ -38,7 +38,7 @@ impl ProxyServer {
     pub fn new(
         bind: impl Into<String>,
         telemetry: Telemetry,
-        runtime: crate::runtime::VmRuntime,
+        runtime: vm::runtime::VmRuntime,
     ) -> Self {
         let handler = crate::http::HttpHandler::new(telemetry.clone(), runtime.clone());
         Self {
@@ -69,7 +69,7 @@ impl ProxyServer {
     }
 
     /// Override the wake-on-request VM runtime.
-    pub fn with_runtime(mut self, runtime: crate::runtime::VmRuntime) -> Self {
+    pub fn with_runtime(mut self, runtime: vm::runtime::VmRuntime) -> Self {
         self.handler = self.handler.with_runtime(runtime);
         self
     }
