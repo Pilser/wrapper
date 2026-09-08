@@ -27,9 +27,15 @@ pub async fn boot_vm(
 
     let machine = MachineConfig::new(template.vcpu_count, template.memory_mb);
     let boot_cfg = boot_source(&template.kernel_path, &template.initrd_path);
-    let root = root_drive(&template.rootfs_path);
+    // Only attach a root drive when a rootfs path is configured; initramfs-only
+    // VMs boot from the initrd and need no block device.
+    let root = if template.rootfs_path.trim().is_empty() {
+        None
+    } else {
+        Some(root_drive(&template.rootfs_path))
+    };
 
-    let result = boot_vm_inner(client, &machine, &boot_cfg, &root).await;
+    let result = boot_vm_inner(client, &machine, &boot_cfg, root.as_ref()).await;
 
     match result {
         Ok(()) => {
@@ -61,7 +67,7 @@ async fn boot_vm_inner(
     client: &FirecrackerClient,
     machine: &MachineConfig,
     boot_cfg: &crate::firecracker::BootSourceConfig,
-    root: &crate::firecracker::config::DriveConfig,
+    root: Option<&crate::firecracker::config::DriveConfig>,
 ) -> shared::Result<()> {
     let machine_body =
         serde_json::to_value(machine).map_err(|e| CoreError::Vm(e.to_string()))?;
@@ -75,13 +81,17 @@ async fn boot_vm_inner(
         .put("/boot-source", &boot_body)
         .await
         .map_err(|e| CoreError::Vm(e.to_string()))?;
-    let drive_body =
-        serde_json::to_value(root).map_err(|e| CoreError::Vm(e.to_string()))?;
-    let drive_path = format!("/drives/{}", root.drive_id);
-    client
-        .put(&drive_path, &drive_body)
-        .await
-        .map_err(|e| CoreError::Vm(e.to_string()))?;
+    // Attach a root drive only when one is configured (initramfs-only VMs
+    // boot straight from the initrd and need no block device).
+    if let Some(root) = root {
+        let drive_body =
+            serde_json::to_value(root).map_err(|e| CoreError::Vm(e.to_string()))?;
+        let drive_path = format!("/drives/{}", root.drive_id);
+        client
+            .put(&drive_path, &drive_body)
+            .await
+            .map_err(|e| CoreError::Vm(e.to_string()))?;
+    }
     client
         .put_action("InstanceStart")
         .await
