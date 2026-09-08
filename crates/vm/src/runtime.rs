@@ -12,6 +12,10 @@ use telemetry::Telemetry;
 use crate::firecracker::FirecrackerClient;
 use crate::manager::VmManager;
 
+// Network helpers live in the `network` crate; re-exported here for convenience.
+use network::ip::IpPool;
+use network::tap::{self, TapCreateOptions};
+
 /// The port the zerowrapper listens on inside every VM.
 pub const ZERO_WRAPPER_PORT: u16 = 9092;
 
@@ -22,7 +26,7 @@ const DEFAULT_VCPU: u32 = 2;
 #[derive(Clone)]
 pub struct VmRuntime {
     vm_manager: VmManager,
-    ip_pool: crate::ip::IpPool,
+    ip_pool: IpPool,
     db: db::global::GlobalDb,
     telemetry: Telemetry,
     kernel_path: String,
@@ -40,7 +44,7 @@ impl VmRuntime {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             vm_manager: VmManager::with_telemetry(firecracker_bin, telemetry.clone()),
-            ip_pool: crate::ip::IpPool::with_telemetry(net_cfg, telemetry.clone()),
+            ip_pool: IpPool::with_telemetry(net_cfg, telemetry.clone()),
             db,
             telemetry,
             kernel_path: kernel_path.into(),
@@ -68,11 +72,11 @@ impl VmRuntime {
 
         // 4. Create + attach a tap device.
         let tap = format!("tap_{}", &tenant_id[..8]);
-        crate::tap::create_tap(crate::tap::TapCreateOptions {
+        tap::create_tap(TapCreateOptions {
             name: tap.clone(),
             ip: ip.clone(),
         })?;
-        crate::tap::configure_tap(&tap, &ip)?;
+        tap::configure_tap(&tap, &ip)?;
 
         // 5. Boot Firecracker for this tenant.
         let sock = std::path::PathBuf::from(format!("/tmp/fc_{tenant_id}.sock"));

@@ -11,6 +11,7 @@ path = "src/lib.rs"
 shared = { path = "../shared" }
 telemetry = { path = "../telemetry" }
 network = { path = "../network" }
+db = { path = "../db" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

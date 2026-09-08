@@ -12,6 +12,7 @@ shared = { path = "../shared" }
 telemetry = { path = "../telemetry" }
 auth = { path = "../auth" }
 db = { path = "../db" }
+vm = { path = "../vm" }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
