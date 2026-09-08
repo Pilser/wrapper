@@ -47,6 +47,25 @@ pub async fn update(conn: &Connection, c: &Category) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn get_by_id(conn: &Connection, id: &str) -> anyhow::Result<Option<Category>> {
+    let mut rows = conn.query(
+        "SELECT id, name, description, vm_template_id, max_tenants, status, created_at, updated_at \
+         FROM categories WHERE id = ?1",
+        [id],
+    )
+    .await?;
+    let Some(row) = rows.next().await? else { return Ok(None) };
+    let text = |i: usize| row.get_value(i).ok().and_then(|v| v.as_text().cloned()).unwrap_or_default();
+    Ok(Some(Category {
+        id: text(0), name: text(1),
+        description: Some(text(2)).filter(|s| !s.is_empty()),
+        vm_template_id: text(3),
+        max_tenants: row.get_value(4).ok().and_then(|v| v.as_integer().copied()),
+        status: shared::CategoryStatus::Active,
+        created_at: text(6), updated_at: text(7),
+    }))
+}
+
 pub async fn delete(conn: &Connection, id: &str) -> anyhow::Result<()> {
     conn.execute("DELETE FROM categories WHERE id = ?1", [id]).await?;
     Ok(())

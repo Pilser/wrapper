@@ -75,6 +75,16 @@ pub async fn update(conn: &Connection, t: &Tenant) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Record the VM IP assigned to a tenant after boot.
+pub async fn set_vm_address(conn: &Connection, tenant_id: &str, vm_ip: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE tenants SET vm_ip = ?1, last_login = ?2 WHERE id = ?3",
+        (vm_ip, crate::now_str(), tenant_id),
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn delete(conn: &Connection, id: &str) -> anyhow::Result<()> {
     conn.execute("DELETE FROM tenants WHERE id = ?1", [id]).await?;
     Ok(())

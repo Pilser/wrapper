@@ -55,6 +55,43 @@ impl IpPool {
         &self.gateway
     }
 
+    /// Allocate a free IP for `tenant_id`. Returns None if the pool is exhausted
+    /// or the tenant already holds an address.
+    pub async fn allocate(&self, tenant_id: &str) -> anyhow::Result<Option<String>> {
+        let mut free = self.free.lock().unwrap();
+        let mut taken = self.taken.lock().unwrap();
+        if taken.contains_key(tenant_id) {
+            return Ok(taken.get(tenant_id).cloned());
+        }
+        let ip = free.iter().next().cloned();
+        if let Some(ip) = ip {
+            free.remove(&ip);
+            taken.insert(tenant_id.to_string(), ip.clone());
+            self.telemetry
+                .builder()
+                .level(telemetry::Level::Info)
+                .kind("network.ip.allocated")
+                .category("network")
+                .tenant_id(Some(tenant_id.to_string()))
+                .message(format!("allocated {ip} to {tenant_id}"))
+                .data("ip", ip.clone())
+                .emit();
+            Ok(Some(ip))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Release a tenant's IP back to the free pool.
+    pub async fn release(&self, tenant_id: &str) -> anyhow::Result<()> {
+        let mut free = self.free.lock().unwrap();
+        let mut taken = self.taken.lock().unwrap();
+        if let Some(ip) = taken.remove(tenant_id) {
+            free.insert(ip);
+        }
+        Ok(())
+    }
+
     /// The shared telemetry handle for this pool.
     pub fn telemetry(&self) -> &Telemetry {
         &self.telemetry

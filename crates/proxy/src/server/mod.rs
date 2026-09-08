@@ -35,8 +35,12 @@ impl std::fmt::Debug for ProxyServer {
 }
 
 impl ProxyServer {
-    pub fn new(bind: impl Into<String>, telemetry: Telemetry) -> Self {
-        let handler = crate::http::HttpHandler::new(telemetry.clone());
+    pub fn new(
+        bind: impl Into<String>,
+        telemetry: Telemetry,
+        runtime: crate::runtime::VmRuntime,
+    ) -> Self {
+        let handler = crate::http::HttpHandler::new(telemetry.clone(), runtime.clone());
         Self {
             bind: bind.into(),
             telemetry,
@@ -54,21 +58,19 @@ impl ProxyServer {
 
     /// Override the router used to extract tenant ids from requests.
     pub fn with_router(mut self, router: crate::routing::Router) -> Self {
-        let old = std::mem::replace(
-            &mut self.handler,
-            crate::http::HttpHandler::new(self.telemetry.clone()),
-        );
-        self.handler = old.with_router(router);
+        self.handler = self.handler.with_router(router);
         self
     }
 
     /// Override VM address resolution (e.g. a DB-backed [`crate::routing::VmLookup`]).
     pub fn with_vm_lookup(mut self, lookup: crate::routing::VmLookup) -> Self {
-        let old = std::mem::replace(
-            &mut self.handler,
-            crate::http::HttpHandler::new(self.telemetry.clone()),
-        );
-        self.handler = old.with_lookup(lookup);
+        self.handler = self.handler.with_lookup(lookup);
+        self
+    }
+
+    /// Override the wake-on-request VM runtime.
+    pub fn with_runtime(mut self, runtime: crate::runtime::VmRuntime) -> Self {
+        self.handler = self.handler.with_runtime(runtime);
         self
     }
 

@@ -5,11 +5,13 @@ pub mod idle;
 pub mod lifecycle;
 pub mod manager;
 pub mod resources;
+pub mod runtime;
 pub mod templates;
 
 pub use firecracker::FirecrackerClient;
 pub use idle::{IdleAction, IdleTracker};
 pub use manager::{VmManager, VmRegistry};
+pub use runtime::{VmRuntime, ZERO_WRAPPER_PORT};
 pub use templates::{TemplateRegistry, VmTemplateBuilder};
 
 use shared::VmInfo;

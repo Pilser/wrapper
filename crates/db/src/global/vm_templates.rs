@@ -53,6 +53,27 @@ pub async fn update(conn: &Connection, t: &VmTemplate) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn get_by_id(conn: &Connection, id: &str) -> anyhow::Result<Option<VmTemplate>> {
+    let mut rows = conn.query(
+        "SELECT id, name, description, rootfs_path, kernel_path, initrd_path, vcpu_count, \
+         memory_mb, requires_gpu, status, created_at, updated_at FROM vm_templates WHERE id = ?1",
+        [id],
+    )
+    .await?;
+    let Some(row) = rows.next().await? else { return Ok(None) };
+    let text = |i: usize| row.get_value(i).ok().and_then(|v| v.as_text().cloned()).unwrap_or_default();
+    let integer = |i: usize| row.get_value(i).ok().and_then(|v| v.as_integer().copied()).unwrap_or(0);
+    Ok(Some(VmTemplate {
+        id: text(0), name: text(1),
+        description: Some(text(2)).filter(|s| !s.is_empty()),
+        rootfs_path: text(3), kernel_path: text(4), initrd_path: text(5),
+        vcpu_count: integer(6) as u32, memory_mb: integer(7) as u32,
+        requires_gpu: integer(8) != 0,
+        status: shared::VmTemplateStatus::Active,
+        created_at: text(10), updated_at: text(11),
+    }))
+}
+
 pub async fn delete(conn: &Connection, id: &str) -> anyhow::Result<()> {
     conn.execute("DELETE FROM vm_templates WHERE id = ?1", [id]).await?;
     Ok(())

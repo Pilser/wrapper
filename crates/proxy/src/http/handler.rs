@@ -25,6 +25,7 @@ pub struct HttpHandler {
     telemetry: Telemetry,
     router: crate::routing::Router,
     lookup: crate::routing::VmLookup,
+    runtime: crate::runtime::VmRuntime,
     middleware: crate::middleware::MiddlewareChain,
     request_transform: crate::transform::RequestTransform,
     response_transform: crate::transform::ResponseTransform,
@@ -44,13 +45,14 @@ impl std::fmt::Debug for HttpHandler {
 }
 
 impl HttpHandler {
-    pub fn new(telemetry: Telemetry) -> Self {
+    pub fn new(telemetry: Telemetry, runtime: crate::runtime::VmRuntime) -> Self {
         Self {
             router: crate::routing::Router::new(
                 crate::routing::vm_lookup::DEFAULT_TARGET,
                 telemetry.clone(),
             ),
             lookup: crate::routing::VmLookup::new(telemetry.clone()),
+            runtime,
             middleware: crate::middleware::MiddlewareChain::new(telemetry.clone()),
             request_transform: crate::transform::RequestTransform::new(),
             response_transform: crate::transform::ResponseTransform::new(),
@@ -66,6 +68,11 @@ impl HttpHandler {
 
     pub fn with_lookup(mut self, lookup: crate::routing::VmLookup) -> Self {
         self.lookup = lookup;
+        self
+    }
+
+    pub fn with_runtime(mut self, runtime: crate::runtime::VmRuntime) -> Self {
+        self.runtime = runtime;
         self
     }
 
@@ -128,7 +135,18 @@ impl HttpHandler {
         crate::transform::sanitize(req.headers_mut());
 
         let tenant_id = self.router.route_with_telemetry(&req).await?;
+
+        // Resolve the tenant's VM address. If the tenant has no running VM
+        // (lookup returns the default target), wake one up on demand.
         let upstream_addr = self.lookup.lookup(&tenant_id).await?;
+        let upstream_addr = if upstream_addr == self.lookup.default_target() {
+            self.runtime.ensure_running(&tenant_id).await.map_err(|e| {
+                crate::Error::Proxy(format!("wake VM for {tenant_id}: {e}"))
+            })?
+        } else {
+            upstream_addr
+        };
+
         self.telemetry
             .builder()
             .level(Level::Info)
