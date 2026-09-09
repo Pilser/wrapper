@@ -101,6 +101,15 @@ impl IpPool {
         Ok(())
     }
 
+    /// Mark an IP as taken (startup pre-mark from DB reservations, so a
+    /// restarted wrapper never double-allocates a live VM's address).
+    pub fn mark_taken(&self, tenant_id: &str, ip: &str) {
+        let mut free = self.free.lock().unwrap();
+        let mut taken = self.taken.lock().unwrap();
+        free.remove(ip);
+        taken.insert(tenant_id.to_string(), ip.to_string());
+    }
+
     /// The shared telemetry handle for this pool.
     pub fn telemetry(&self) -> &Telemetry {
         &self.telemetry

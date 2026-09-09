@@ -95,6 +95,23 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
             std::time::Duration::from_secs(p.idle_timeout_minutes * 60),
         );
     }
+    // Restart recovery: never re-allocate an address a live VM still holds.
+    match runtime.premark_reserved().await {
+        Ok(n) => p.telemetry
+            .builder()
+            .level(telemetry::Level::Info)
+            .kind("vm.pool.premarked")
+            .category("vm")
+            .message(format!("pool pre-marked with {n} reserved addresses"))
+            .emit(),
+        Err(e) => p.telemetry
+            .builder()
+            .level(telemetry::Level::Warn)
+            .kind("vm.pool.premark_failed")
+            .category("vm")
+            .message(format!("pool pre-mark failed: {e}"))
+            .emit(),
+    }
     let listener = tokio::net::TcpListener::bind(addr).await?;
     p.telemetry
         .builder()

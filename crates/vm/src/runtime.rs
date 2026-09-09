@@ -157,6 +157,19 @@ impl VmRuntime {
         Ok(addr)
     }
 
+    /// Pre-mark IPs already reserved in the DB (restart recovery): a fresh
+    /// in-memory pool would otherwise hand a live VM's address to a new
+    /// tenant. Call once at startup before serving.
+    pub async fn premark_reserved(&self) -> anyhow::Result<usize> {
+        let conn = self.db.conn()?;
+        let rows = db::global::networks::all(&conn).await?;
+        let n = rows.len();
+        for row in rows {
+            self.ip_pool.mark_taken(&row.tenant_id, &row.ip_address);
+        }
+        Ok(n)
+    }
+
     /// Return the existing `IP:port` if the tenant already has a recorded VM.
     async fn existing_vm(&self, tenant_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.db.conn()?;
