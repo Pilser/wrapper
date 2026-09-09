@@ -149,12 +149,14 @@ impl HttpHandler {
         // Resolve the tenant's VM address. If the tenant has no running VM
         // (lookup returns the default target) wake one up on demand. A
         // recorded address is PROBED first: a dead VM (crashed, reaped)
-        // must re-wake, never black-hole into a stale IP.
+        // must re-wake, never black-hole into a stale IP. A freshly woken
+        // VM needs ~40s before zw answers, so the wake path WAITS (retry
+        // probe) instead of failing the request that triggered the boot.
         let upstream_addr = self.lookup.lookup(&tenant_id).await?;
-        let upstream_addr = if upstream_addr == self.lookup.default_target() {
-            self.wake(&tenant_id).await?
+        let (upstream_addr, woken) = if upstream_addr == self.lookup.default_target() {
+            (self.wake(&tenant_id).await?, true)
         } else if probe_upstream(&upstream_addr).await {
-            upstream_addr
+            (upstream_addr, false)
         } else {
             self.telemetry
                 .builder()
@@ -166,8 +168,20 @@ impl HttpHandler {
                     "recorded VM {upstream_addr} for {tenant_id} unreachable, re-waking"
                 ))
                 .emit();
-            self.wake(&tenant_id).await?
+            (self.wake(&tenant_id).await?, true)
         };
+        if woken && !wait_for_zw(&upstream_addr).await {
+            self.telemetry
+                .builder()
+                .level(telemetry::Level::Warn)
+                .kind("proxy.vm.boot_slow")
+                .category("proxy")
+                .source("proxy::http::handler")
+                .message(format!(
+                    "VM {upstream_addr} for {tenant_id} still dark after wake; forwarding anyway"
+                ))
+                .emit();
+        }
 
         self.telemetry
             .builder()
@@ -291,4 +305,17 @@ async fn probe_upstream(upstream_addr: &str) -> bool {
     tokio::time::timeout(std::time::Duration::from_millis(800), fut)
         .await
         .is_ok_and(|r| r.is_ok())
+}
+
+/// Wait for a freshly woken VM's zw to accept TCP (guest boot ~40s).
+/// Polls every 2s up to ~50s; false on timeout (caller forwards anyway and
+/// surfaces the real upstream error).
+async fn wait_for_zw(upstream_addr: &str) -> bool {
+    for _ in 0..25 {
+        if probe_upstream(upstream_addr).await {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    false
 }
