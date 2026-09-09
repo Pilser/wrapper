@@ -32,10 +32,19 @@ impl IpPool {
 
     pub fn with_telemetry(cfg: NetworkConfig, telemetry: Telemetry) -> Self {
         let mut free = HashSet::new();
-        // Use the third octet prefix of the configured range (e.g. 172.16.0.0/12 -> 172.16.0).
-        let prefix = cfg.ip_range.split('/').next().unwrap_or("172.16.0").to_string();
+        // /24 base of the configured range ("172.16.0.0/12" -> "172.16.0"):
+        // take the base address, keep its first three octets. A naive
+        // split-off-the-CIDR ("172.16.0.0" + ".231") builds 5-part
+        // non-addresses that `ip addr add` rejects.
+        let base = cfg.ip_range.split('/').next().unwrap_or("172.16.0.0");
+        let mut octets: Vec<&str> = base.split('.').collect();
+        while octets.len() < 3 {
+            octets.push("0");
+        }
+        let prefix = octets[..3].join(".");
         let start = 2u32;
-        let end = start + cfg.max_tenants.min(65_534) as u32 - 1;
+        // Stay inside the /24 (last octet 2..=254) regardless of max_tenants.
+        let end = (start + cfg.max_tenants.min(65_534) as u32 - 1).min(254);
         for n in start..=end {
             free.insert(format!("{prefix}.{n}"));
         }
