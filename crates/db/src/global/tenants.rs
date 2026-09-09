@@ -37,9 +37,9 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> anyhow::Result<Option<Ten
         vm_ip: Some(text(5)).filter(|s| !s.is_empty()),
         vm_process_id: row.get_value(6).ok().and_then(|v| v.as_integer().copied()),
         vm_template_id: Some(text(7)).filter(|s| !s.is_empty()),
-        tap_device: Some(text(8)).filter(|s| !s.is_empty()),
-        status: shared::TenantStatus::Active,
-        db_path: text(10), created_at: text(11),
+            tap_device: Some(text(8)).filter(|s| !s.is_empty()),
+            status: parse_status(&text(9)),
+            db_path: text(10), created_at: text(11),
         last_login: Some(text(12)).filter(|s| !s.is_empty()),
         category_changed_at: Some(text(13)).filter(|s| !s.is_empty()),
     }))

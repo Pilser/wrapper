@@ -27,11 +27,18 @@ pub async fn list(conn: &Connection) -> anyhow::Result<Vec<Category>> {
             description: Some(text(2)).filter(|s| !s.is_empty()),
             vm_template_id: text(3),
             max_tenants: row.get_value(4).ok().and_then(|v| v.as_integer().copied()),
-            status: shared::CategoryStatus::Active,
+            status: parse_status(&text(5)),
             created_at: text(6), updated_at: text(7),
         });
     }
     Ok(out)
+}
+
+fn parse_status(s: &str) -> shared::CategoryStatus {
+    match s {
+        "inactive" => shared::CategoryStatus::Inactive,
+        _ => shared::CategoryStatus::Active,
+    }
 }
 
 pub async fn update(conn: &Connection, c: &Category) -> anyhow::Result<()> {
@@ -60,9 +67,9 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> anyhow::Result<Option<Cat
         id: text(0), name: text(1),
         description: Some(text(2)).filter(|s| !s.is_empty()),
         vm_template_id: text(3),
-        max_tenants: row.get_value(4).ok().and_then(|v| v.as_integer().copied()),
-        status: shared::CategoryStatus::Active,
-        created_at: text(6), updated_at: text(7),
+            max_tenants: row.get_value(4).ok().and_then(|v| v.as_integer().copied()),
+            status: parse_status(&text(5)),
+            created_at: text(6), updated_at: text(7),
     }))
 }
 

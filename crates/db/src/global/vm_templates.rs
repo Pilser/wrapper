@@ -31,7 +31,7 @@ pub async fn list(conn: &Connection) -> anyhow::Result<Vec<VmTemplate>> {
             rootfs_path: text(3), kernel_path: text(4), initrd_path: text(5),
             vcpu_count: integer(6) as u32, memory_mb: integer(7) as u32,
             requires_gpu: integer(8) != 0,
-            status: shared::VmTemplateStatus::Active,
+            status: parse_status(&text(9)),
             created_at: text(10), updated_at: text(11),
         });
     }
@@ -67,11 +67,18 @@ pub async fn get_by_id(conn: &Connection, id: &str) -> anyhow::Result<Option<VmT
         id: text(0), name: text(1),
         description: Some(text(2)).filter(|s| !s.is_empty()),
         rootfs_path: text(3), kernel_path: text(4), initrd_path: text(5),
-        vcpu_count: integer(6) as u32, memory_mb: integer(7) as u32,
-        requires_gpu: integer(8) != 0,
-        status: shared::VmTemplateStatus::Active,
-        created_at: text(10), updated_at: text(11),
-    }))
+            vcpu_count: integer(6) as u32, memory_mb: integer(7) as u32,
+            requires_gpu: integer(8) != 0,
+            status: parse_status(&text(9)),
+            created_at: text(10), updated_at: text(11),
+        }))
+    }
+
+fn parse_status(s: &str) -> shared::VmTemplateStatus {
+    match s {
+        "retired" => shared::VmTemplateStatus::Retired,
+        _ => shared::VmTemplateStatus::Active,
+    }
 }
 
 pub async fn delete(conn: &Connection, id: &str) -> anyhow::Result<()> {
