@@ -50,26 +50,11 @@ impl Router {
         {
             return id;
         }
-        // WebSocket handshakes send NO Referer (only Origin, which carries
-        // no path), so root-path /ws can never resolve above. The proxy
-        // therefore plants a zw_tenant cookie on every proxied page load
-        // (see HttpHandler); browsers attach cookies to WS handshakes
-        // automatically. Last resort before "default".
-        if let Some(cookie) = req
-            .headers()
-            .get(hyper::header::COOKIE)
-            .and_then(|v| v.to_str().ok())
-        {
-            for part in cookie.split(';') {
-                let part = part.trim();
-                if let Some(id) = part
-                    .strip_prefix("zw_tenant=")
-                    .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-                {
-                    return id.to_string();
-                }
-            }
-        }
+        // NOTE: a zw_tenant cookie fallback lived here and was REMOVED:
+        // third-party cookie blocking (dev-server/Pages iframes) rejects it
+        // with console noise, and the base-tag rewrite (guest WS URLs carry
+        // the /tenant_<id>/ prefix) covers the same cases deterministically.
+        // Root-path requests with truly no context correctly fall through.
         "default".to_string()
     }
 

@@ -394,13 +394,6 @@ impl HttpHandler {
         if let Ok(id) = tenant_id.parse::<hyper::header::HeaderValue>() {
             parts.headers.insert("x-tenant-id", id);
         }
-        // Read before `parts` moves into the upstream request: browsers flag
-        // cross-site iframe loads, where a Lax cookie would only be rejected.
-        let cross_site = parts
-            .headers
-            .get("sec-fetch-site")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.eq_ignore_ascii_case("cross-site"));
 
         let body_bytes = body
             .collect()
@@ -414,7 +407,7 @@ impl HttpHandler {
             .request(upstream_req)
             .await
             .map_err(|e| WrapperError::Proxy(format!("upstream {upstream_addr}: {e}")))?;
-        let (mut res_parts, res_body) = upstream_res.into_parts();
+        let (res_parts, res_body) = upstream_res.into_parts();
         let bytes: Bytes = res_body
             .collect()
             .await
@@ -425,19 +418,10 @@ impl HttpHandler {
             res_parts.headers.get(hyper::header::CONTENT_TYPE),
             tenant_id,
         );
-        // Plant the tenant cookie so prefix-less follow-ups (absolute
-        // assets, and WebSocket handshakes which carry no Referer) resolve
-        // to this tenant. Browsers scope it to the proxy origin (Path=/).
-        // Routing hint only — session auth still uses Bearer tokens.
-        // Skipped for cross-site iframes (dev server / Pages embedding):
-        // third-party Lax cookies are rejected with a console warning, so
-        // planting one is pure noise there. Those contexts are covered by
-        // the base-tag rewrite (prefixed WS/asset URLs) instead.
-        if tenant_id != "default" && !cross_site {
-            if let Ok(cookie) = format!("zw_tenant={tenant_id}; Path=/; SameSite=Lax").parse() {
-                res_parts.headers.insert(hyper::header::SET_COOKIE, cookie);
-            }
-        }
+        // NOTE: no tenant cookie is planted (a zw_tenant fallback existed
+        // and was removed): third-party contexts reject it with console
+        // noise, and the base-tag rewrite covers prefixed WS/asset URLs
+        // deterministically. Session auth still uses Bearer tokens.
         Ok(hyper::Response::from_parts(res_parts, Full::new(bytes)))
     }
 }
