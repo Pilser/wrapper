@@ -36,6 +36,25 @@ impl Router {
                 return raw.to_string();
             }
         }
+        // Absolute subresource URLs (zw emits /?asset=..., /favicon.*, ...):
+        // the browser resolves them against the proxy origin ROOT, losing
+        // the prefix. Recover the tenant from the Referer page
+        // (http://host:18080/tenant_<id>/...), which browsers always send
+        // same-origin. Without this every asset 500s (and the MIME error
+        // below is just our JSON 500 served as .js/.css).
+        if let Some(referer) = req
+            .headers()
+            .get(hyper::header::REFERER)
+            .and_then(|v| v.to_str().ok())
+        {
+            for seg in referer.split('/') {
+                if let Some(raw) = seg.strip_prefix("tenant_") {
+                    if !raw.is_empty() {
+                        return raw.to_string();
+                    }
+                }
+            }
+        }
         "default".to_string()
     }
 
