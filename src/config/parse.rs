@@ -59,6 +59,18 @@ pub fn parse(text: &str) -> Result<Config> {
         "binary_path",
         cfg.firecracker.binary_path,
     )?;
+    cfg.firecracker.kernel_path = str_val(
+        &table,
+        "firecracker",
+        "kernel_path",
+        cfg.firecracker.kernel_path,
+    )?;
+    cfg.firecracker.initrd_path = str_val(
+        &table,
+        "firecracker",
+        "initrd_path",
+        cfg.firecracker.initrd_path,
+    )?;
     cfg.network.ip_range = str_val(&table, "network", "ip_range", cfg.network.ip_range)?;
     cfg.network.gateway = str_val(&table, "network", "gateway", cfg.network.gateway)?;
     cfg.database.global_path = str_val(
@@ -107,6 +119,13 @@ pub fn parse(text: &str) -> Result<Config> {
         "default_push_port",
         cfg.deployments.default_push_port,
     )?;
+    cfg.vm.idle_timeout_minutes = u64_val(
+        &table,
+        "vm",
+        "idle_timeout_minutes",
+        cfg.vm.idle_timeout_minutes,
+    )?;
+    cfg.api.public_base = str_val(&table, "api", "public_base", cfg.api.public_base)?;
     cfg.telemetry.enabled = bool_val(&table, "telemetry", "enabled", cfg.telemetry.enabled)?;
     cfg.telemetry.output = str_val(&table, "telemetry", "output", cfg.telemetry.output)?;
     cfg.telemetry.disk.path = str_val(

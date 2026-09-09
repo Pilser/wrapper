@@ -15,7 +15,7 @@ pub mod websocket;
 pub use http::HttpHandler;
 pub use middleware::{AuthMiddleware, CorsMiddleware, LoggingMiddleware, MiddlewareChain, RateLimiter};
 pub use pool::{ConnectionPool, HealthChecker, PooledConn};
-pub use routing::{FallbackHandler, Router, TenantRoute, VmLookup};
+pub use routing::{ActivityMap, FallbackHandler, Router, TenantRoute, VmLookup};
 pub use server::{GracefulShutdown, ProxyServer, TcpAcceptor, TlsConfig};
 pub use transform::{RequestTransform, ResponseTransform};
 pub use websocket::{PingTracker, WsFrame, WsHandler, WsStream};

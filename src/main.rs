@@ -114,7 +114,7 @@ async fn async_main() -> anyhow::Result<()> {
     };
     let net_api = api::network::NetworkApi::new(telemetry.clone());
     let net_manager = net_api
-        .manager(net_cfg)
+        .manager(net_cfg.clone())
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     telemetry
         .builder()
@@ -247,10 +247,44 @@ async fn async_main() -> anyhow::Result<()> {
         cfg.deployments.default_push_port
     );
 
+    // 15b. Serve the public listener: /api/* (user + admin APIs for the
+    // frontend) with everything else proxied to the tenant's zw.
+    // Runs as a background task; the event loop below still owns shutdown.
+    let serve_bind = format!("{}:{}", cfg.wrapper.bind_address, cfg.wrapper.port);
+    let disks_dir = std::path::Path::new(&cfg.firecracker.kernel_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let serve_params = api::server::ServeParams {
+        gdb: gdb.clone(),
+        telemetry: telemetry.clone(),
+        firecracker_bin: cfg.firecracker.binary_path.clone(),
+        net_cfg: net_cfg.clone(),
+        kernel_path: cfg.firecracker.kernel_path.clone(),
+        initrd_path: cfg.firecracker.initrd_path.clone(),
+        public_base: cfg.api.public_base.clone(),
+        disks_dir,
+        idle_timeout_minutes: cfg.vm.idle_timeout_minutes,
+    };
+    let serve_telemetry = telemetry.clone();
+    let serve_task = tokio::spawn(async move {
+        if let Err(e) = api::server::serve(&serve_bind, serve_params).await {
+            serve_telemetry
+                .builder()
+                .level(Level::Error)
+                .kind("api.serve.failed")
+                .category("api")
+                .source("wrapper::main")
+                .message(format!("public listener failed: {e}"))
+                .emit();
+        }
+    });
+
     // 16. Enter event loop → run until shutdown.
     let shutdown = shutdown::GracefulShutdown::new();
     shutdown::wait_for_signal(&shutdown).await;
 
+    serve_task.abort();
     println!("shutting down...");
     telemetry
         .builder()

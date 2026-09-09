@@ -28,6 +28,10 @@ pub struct Config {
     #[serde(default)]
     pub deployments: DeploymentsSection,
     #[serde(default)]
+    pub vm: VmSection,
+    #[serde(default)]
+    pub api: ApiSection,
+    #[serde(default)]
     pub telemetry: TelemetrySection,
 }
 
@@ -42,6 +46,8 @@ impl Default for Config {
             plugins: PluginsSection::default(),
             categories: CategoriesSection::default(),
             deployments: DeploymentsSection::default(),
+            vm: VmSection::default(),
+            api: ApiSection::default(),
             telemetry: TelemetrySection::default(),
         }
     }
@@ -68,12 +74,20 @@ impl Default for WrapperSection {
 pub struct FirecrackerSection {
     #[serde(default = "default_fc_binary")]
     pub binary_path: String,
+    /// Host path to the guest kernel (also the VmRuntime default).
+    #[serde(default = "default_kernel_path")]
+    pub kernel_path: String,
+    /// Host path to the guest initramfs (also the VmRuntime default).
+    #[serde(default = "default_initrd_path")]
+    pub initrd_path: String,
 }
 
 impl Default for FirecrackerSection {
     fn default() -> Self {
         Self {
             binary_path: default_fc_binary(),
+            kernel_path: default_kernel_path(),
+            initrd_path: default_initrd_path(),
         }
     }
 }
@@ -177,6 +191,42 @@ impl Default for DeploymentsSection {
         Self {
             storage_path: default_deployments_path(),
             default_push_port: default_push_port(),
+        }
+    }
+}
+
+/// `[vm]` — guest lifecycle: idle auto-sleep.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmSection {
+    /// Minutes without proxied requests before a VM is shut down.
+    /// 0 disables auto-sleep. Shutdown clears the networks row so the next
+    /// request re-wakes the VM (wake-on-request round trip).
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_minutes: u64,
+}
+
+impl Default for VmSection {
+    fn default() -> Self {
+        Self {
+            idle_timeout_minutes: default_idle_timeout(),
+        }
+    }
+}
+
+/// `[api]` — public surface for frontends (user UI + admin UI).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiSection {
+    /// Public base URL of THIS wrapper as seen from browsers, used to mint
+    /// serverless public links: <public_base>/tenant_<id>/<app-path>.
+    /// Deployer MUST set this to the host's reachable address.
+    #[serde(default = "default_public_base")]
+    pub public_base: String,
+}
+
+impl Default for ApiSection {
+    fn default() -> Self {
+        Self {
+            public_base: default_public_base(),
         }
     }
 }
@@ -344,6 +394,18 @@ fn default_wrapper_port() -> u16 {
 }
 fn default_fc_binary() -> String {
     "~/.local/bin/firecracker".to_string()
+}
+fn default_kernel_path() -> String {
+    "../disks/vmlinux.bin".to_string()
+}
+fn default_initrd_path() -> String {
+    "../disks/initramfs.cpio.gz".to_string()
+}
+fn default_idle_timeout() -> u64 {
+    30
+}
+fn default_public_base() -> String {
+    "http://127.0.0.1:8080".to_string()
 }
 fn default_ip_range() -> String {
     "172.16.0.0/12".to_string()

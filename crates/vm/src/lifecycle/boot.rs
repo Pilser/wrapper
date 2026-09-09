@@ -78,6 +78,7 @@ pub async fn boot_vm_with_net(
             &template.initrd_path,
             &n.vm_ip,
             &n.gateway,
+            tenant_id,
         ),
         None => boot_source(&template.kernel_path, &template.initrd_path),
     };

@@ -14,6 +14,7 @@ pub mod macros;
 pub mod network;
 pub mod plugin;
 pub mod proxy;
+pub mod server;
 pub mod supervisor;
 pub mod telemetry;
 pub mod vm;

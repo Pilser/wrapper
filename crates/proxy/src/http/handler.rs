@@ -30,6 +30,8 @@ pub struct HttpHandler {
     request_transform: crate::transform::RequestTransform,
     response_transform: crate::transform::ResponseTransform,
     client: UpstreamClient,
+    /// Optional activity map touched per forwarded request (idle reaper).
+    activity: Option<crate::routing::ActivityMap>,
 }
 
 impl std::fmt::Debug for HttpHandler {
@@ -57,6 +59,7 @@ impl HttpHandler {
             request_transform: crate::transform::RequestTransform::new(),
             response_transform: crate::transform::ResponseTransform::new(),
             client: upstream_client(),
+            activity: None,
             telemetry,
         }
     }
@@ -94,6 +97,13 @@ impl HttpHandler {
         transform: crate::transform::ResponseTransform,
     ) -> Self {
         self.response_transform = transform;
+        self
+    }
+
+    /// Record per-tenant activity on every forwarded request so the idle
+    /// reaper can sleep quiet VMs.
+    pub fn with_activity(mut self, activity: crate::routing::ActivityMap) -> Self {
+        self.activity = Some(activity);
         self
     }
 
@@ -137,14 +147,26 @@ impl HttpHandler {
         let tenant_id = self.router.route_with_telemetry(&req).await?;
 
         // Resolve the tenant's VM address. If the tenant has no running VM
-        // (lookup returns the default target), wake one up on demand.
+        // (lookup returns the default target) wake one up on demand. A
+        // recorded address is PROBED first: a dead VM (crashed, reaped)
+        // must re-wake, never black-hole into a stale IP.
         let upstream_addr = self.lookup.lookup(&tenant_id).await?;
         let upstream_addr = if upstream_addr == self.lookup.default_target() {
-            self.runtime.ensure_running(&tenant_id).await.map_err(|e| {
-                WrapperError::Proxy(format!("wake VM for {tenant_id}: {e}"))
-            })?
-        } else {
+            self.wake(&tenant_id).await?
+        } else if probe_upstream(&upstream_addr).await {
             upstream_addr
+        } else {
+            self.telemetry
+                .builder()
+                .level(telemetry::Level::Warn)
+                .kind("proxy.vm.unreachable")
+                .category("proxy")
+                .source("proxy::http::handler")
+                .message(format!(
+                    "recorded VM {upstream_addr} for {tenant_id} unreachable, re-waking"
+                ))
+                .emit();
+            self.wake(&tenant_id).await?
         };
 
         self.telemetry
@@ -158,7 +180,11 @@ impl HttpHandler {
             ))
             .emit();
 
-        let mut res = self.forward(&upstream_addr, req).await?;
+        if let Some(activity) = &self.activity {
+            activity.touch(&tenant_id);
+        }
+
+        let mut res = self.forward(&upstream_addr, &tenant_id, req).await?;
         self.response_transform.apply(&mut res)?;
         self.telemetry
             .builder()
@@ -174,10 +200,21 @@ impl HttpHandler {
         Ok(res)
     }
 
-    /// Forward one request to `upstream_addr`, copying method/uri/headers/body.
+    /// Boot (or re-boot) the tenant's VM; returns its `IP:port`.
+    async fn wake(&self, tenant_id: &str) -> Result<String> {
+        self.runtime.ensure_running(tenant_id).await.map_err(|e| {
+            WrapperError::Proxy(format!("wake VM for {tenant_id}: {e}"))
+        })
+    }
+
+    /// Forward one request to `upstream_addr`, copying method/uri/headers/body.    ///
+    /// PUBLIC-LINK CONTRACT (deployment/PUBLIC-LINK-ROUTING.txt): the
+    /// `/tenant_<id>` prefix is STRIPPED so zw always sees clean app paths,
+    /// and `x-tenant-id` is always set on the upstream request.
     async fn forward(
         &self,
         upstream_addr: &str,
+        tenant_id: &str,
         req: hyper::Request<hyper::body::Incoming>,
     ) -> Result<hyper::Response<Full<Bytes>>> {
         let (mut parts, body) = req.into_parts();
@@ -186,7 +223,8 @@ impl HttpHandler {
             .path_and_query()
             .map(|pq| pq.as_str().to_string())
             .unwrap_or_else(|| "/".to_string());
-        let uri: hyper::Uri = format!("http://{upstream_addr}{path_and_query}")
+        let clean_path = strip_tenant_prefix(&path_and_query, tenant_id);
+        let uri: hyper::Uri = format!("http://{upstream_addr}{clean_path}")
             .parse()
             .map_err(|e| WrapperError::Proxy(format!("bad upstream uri: {e}")))?;
         parts.uri = uri;
@@ -194,6 +232,9 @@ impl HttpHandler {
             .parse::<hyper::header::HeaderValue>()
             .map_err(|e| WrapperError::Proxy(format!("bad upstream host: {e}")))?;
         parts.headers.insert(hyper::header::HOST, host);
+        if let Ok(id) = tenant_id.parse::<hyper::header::HeaderValue>() {
+            parts.headers.insert("x-tenant-id", id);
+        }
 
         let body_bytes = body
             .collect()
@@ -215,4 +256,39 @@ impl HttpHandler {
             .to_bytes();
         Ok(hyper::Response::from_parts(res_parts, Full::new(bytes)))
     }
+}
+
+/// Strip a leading `/tenant_<id>` segment (segment-boundary aware) so the
+/// upstream zw sees clean app paths. Query strings are preserved.
+fn strip_tenant_prefix(path_and_query: &str, tenant_id: &str) -> String {
+    if tenant_id == "default" {
+        return path_and_query.to_string();
+    }
+    let seg = if tenant_id.starts_with("tenant_") {
+        tenant_id.to_string()
+    } else {
+        format!("tenant_{tenant_id}")
+    };
+    let prefixed = format!("/{seg}");
+    let rest = match path_and_query.strip_prefix(prefixed.as_str()) {
+        Some(r) => r,
+        None => return path_and_query.to_string(),
+    };
+    // Only strip on a segment boundary: end, '/' or '?' (query).
+    match rest.chars().next() {
+        None => "/".to_string(),
+        Some('/') => rest.to_string(),
+        Some('?') => format!("/{rest}"),
+        Some(_) => path_and_query.to_string(),
+    }
+}
+
+/// Fast liveness probe of a recorded `IP:port` (800ms budget). True when the
+/// VM accepts TCP — enough to trust the address; the forwarded request itself
+/// is the real health check.
+async fn probe_upstream(upstream_addr: &str) -> bool {
+    let fut = tokio::net::TcpStream::connect(upstream_addr);
+    tokio::time::timeout(std::time::Duration::from_millis(800), fut)
+        .await
+        .is_ok_and(|r| r.is_ok())
 }

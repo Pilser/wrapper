@@ -27,18 +27,23 @@ pub fn boot_source(kernel_path: &str, initrd_path: &str) -> BootSourceConfig {
 /// RNDADDENTROPY — without this the microVM never initializes its CRNG (no
 /// virtio-rng, almost no interrupt entropy) and dropbear/tokio block on
 /// getrandom forever. Same trust model as the host that launched the VM.
+///
+/// `tenant_id` rides the cmdline too (`tenant_id=`): the shared initramfs is
+/// identical for all tenants, so per-boot identity (used for zw link minting
+/// and supervisor heartbeat) must be injected, not baked in.
 pub fn boot_source_with_net(
     kernel_path: &str,
     initrd_path: &str,
     vm_ip: &str,
     gateway: &str,
+    tenant_id: &str,
 ) -> BootSourceConfig {
     let seed = guest_seed_hex();
     BootSourceConfig {
         kernel_image_path: kernel_path.to_string(),
         initrd_path: Some(initrd_path.to_string()),
         boot_args: Some(format!(
-            "console=ttyS0 reboot=k panic=1 pci=off init=/init vm_ip={vm_ip} gw={gateway} random.trust_cpu=on guest_seed={seed}"
+            "console=ttyS0 reboot=k panic=1 pci=off init=/init vm_ip={vm_ip} gw={gateway} random.trust_cpu=on guest_seed={seed} tenant_id={tenant_id}"
         )),
     }
 }
