@@ -79,6 +79,12 @@ impl VmRuntime {
         // tenant tap attached to the bridge, tap up, forwarding/NAT for
         // guest egress. NAT is best-effort: without it the guest is still
         // reachable from the host (SSH :2222, zw :9092, status :8080).
+        //
+        // The tap itself gets NO IP address: it is a pure L2 bridge member.
+        // Assigning the guest IP to the tap makes the HOST claim that IP
+        // (local route) so host TCP connects hit the host stack (RST) and
+        // ping "works" without ever reaching the guest. The guest owns its
+        // IP (via vm_ip= cmdline); the host reaches it through br0.
         let gateway = gateway_for_ip(&ip);
         let tap = tap_name_for_tenant(tenant_id);
         let guest_mac = guest_mac_for_tenant(tenant_id);
@@ -87,8 +93,6 @@ impl VmRuntime {
             name: tap.clone(),
             ip: ip.clone(),
         })?;
-        // Tolerate "already assigned" when reusing a tap from a previous run.
-        let _ = tap::configure_tap(&tap, &ip);
         tap::bring_tap_up(&tap)?;
         Self::enable_forwarding_best_effort(&self.telemetry, &ip);
 
