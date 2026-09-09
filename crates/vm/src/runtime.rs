@@ -179,6 +179,7 @@ impl VmRuntime {
             return Ok(None);
         }
         let _ = tap::bring_tap_up(&tap);
+        kill_stale_holder(tenant_id).await;
         let sock = sock_path(tenant_id);
         let client = match FirecrackerClient::spawn_firecracker(
             &self.vm_manager.firecracker_bin,
@@ -275,7 +276,9 @@ impl VmRuntime {
         tap::bring_tap_up(&tap)?;
         Self::enable_forwarding_best_effort(&self.telemetry, &ip);
 
-        // 5. Boot Firecracker for this tenant.
+        // 5. Boot Firecracker for this tenant (clearing any orphan holder
+        // first so the tap attach cannot EBUSY).
+        kill_stale_holder(tenant_id).await;
         let sock = sock_path(tenant_id);
         let client =
             FirecrackerClient::spawn_firecracker(&self.vm_manager.firecracker_bin, &sock).await?;
@@ -404,6 +407,24 @@ impl VmRuntime {
 /// Deterministic API socket per tenant (spawn, snapshot, reaper agree).
 pub fn fc_socket_path(tenant_id: &str) -> std::path::PathBuf {
     sock_path(tenant_id)
+}
+
+/// Kill a stale Firecracker still holding this tenant's tap/socket.
+/// Wrapper restarts orphan VMs BY DESIGN (guests outlive the wrapper so a
+/// restart doesn't kill tenants). But a dead-yet-holding FC (guest app
+/// crashed, process alive) blocks the tap with EBUSY: the next boot's PUT
+/// /network-interfaces then 400s ("Resource busy"). Clearing the holder
+/// before every spawn makes boots idempotent across generations.
+/// Safe: the wrapper's own cmdline never contains the socket pattern.
+async fn kill_stale_holder(tenant_id: &str) {
+    let pattern = format!("/tmp/fc_{tenant_id}.sock");
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-f", &pattern])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
 
 fn sock_path(tenant_id: &str) -> std::path::PathBuf {
