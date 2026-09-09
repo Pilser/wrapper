@@ -129,6 +129,12 @@ impl FirecrackerClient {
         self.put("/actions", &body).await
     }
 
+    /// Firecracker `PATCH /vm` pause helper. Snapshots REQUIRE a paused VM.
+    pub async fn pause_vm(&self) -> anyhow::Result<Value> {
+        let body = serde_json::json!({ "state": "Paused" });
+        self.request("PATCH", "/vm", Some(&body)).await
+    }
+
     /// Firecracker `PUT /snapshot/create` helper.
     pub async fn create_snapshot(
         &self,

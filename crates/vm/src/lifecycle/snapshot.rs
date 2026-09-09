@@ -1,4 +1,6 @@
-//! Snapshot a running VM via `PUT /snapshot/create`.
+//! Snapshot a running VM: pause vCPUs first (Firecracker REQUIRES Paused
+//! state for `/snapshot/create`), then write state + mem files. No resume:
+//! the idle path kills the VM right after.
 
 use telemetry::{Level, Telemetry};
 
@@ -14,6 +16,9 @@ pub async fn snapshot_vm(
     telemetry.builder().level(Level::Info).kind("vm.snapshot.started").category("vm")
         .vm_id(Some(vm_id.to_string()))
         .message("snapshot started").emit();
+    if let Err(e) = client.pause_vm().await {
+        return Err(shared::Error::Vm(format!("pause before snapshot: {e}")));
+    }
     let result = client
         .create_snapshot(snapshot_path, mem_file_path)
         .await
