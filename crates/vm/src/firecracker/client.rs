@@ -33,6 +33,18 @@ impl FirecrackerClient {
             std::fs::remove_file(sock).map_err(|e| anyhow::anyhow!("remove stale sock: {e}"))?;
         }
         let sock_str = sock.to_string_lossy().to_string();
+        // Firecracker 1.7 ABORTS at startup when its stdout is /dev/null
+        // (silent SIGABRT, no socket ever appears). Redirect stdout+stderr
+        // to a per-VM log file instead of null: this both avoids the abort
+        // and keeps the guest serial console (kernel + /init + supervisor
+        // output) for diagnosis. Sibling of the socket:
+        // /tmp/fc_<tenant>.sock -> /tmp/fc_<tenant>.log.
+        let log_path = sock.with_extension("log");
+        let log_file = std::fs::File::create(&log_path)
+            .map_err(|e| anyhow::anyhow!("create fc log {}: {e}", log_path.display()))?;
+        let log_err = log_file
+            .try_clone()
+            .map_err(|e| anyhow::anyhow!("clone fc log handle: {e}"))?;
         // SAFETY: we leak the child handle deliberately. The Firecracker
         // process must outlive the wrapper's configuration calls; it is torn
         // down explicitly via /actions or by killing the PID later.
@@ -42,8 +54,8 @@ impl FirecrackerClient {
             .arg("--id")
             .arg(format!("fc_{}", std::process::id()))
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(log_file)
+            .stderr(log_err)
             .spawn()
             .map_err(|e| anyhow::anyhow!("spawn firecracker: {e}"))?;
         // Keep the child running: forget the handle (we don't wait on it).
