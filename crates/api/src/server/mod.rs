@@ -37,6 +37,8 @@ pub struct AppState {
     pub public_base: String,
     /// Host directory scanned by GET /api/admin/disks (guest images).
     pub disks_dir: String,
+    /// Host directory for per-tenant snapshots (<dir>/<tenant>/{vmstate,mem}).
+    pub snapshots_dir: String,
     /// Idle minutes before auto-sleep (config `[vm]`, 0 = disabled).
     pub idle_timeout_minutes: u64,
 }
@@ -62,6 +64,7 @@ pub struct ServeParams {
     pub initrd_path: String,
     pub public_base: String,
     pub disks_dir: String,
+    pub snapshots_dir: String,
     pub idle_timeout_minutes: u64,
 }
 
@@ -76,7 +79,8 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         p.telemetry.clone(),
         expand_home(&p.kernel_path),
         expand_home(&p.initrd_path),
-    )?;
+    )?
+    .with_snapshots_dir(p.snapshots_dir.clone());
     let activity = ActivityMap::new();
     // Restart recovery BEFORE the runtime moves into handler/state: never
     // re-allocate an address a live VM still holds.
@@ -106,6 +110,7 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         public_base: p.public_base,
         idle_timeout_minutes: p.idle_timeout_minutes,
         disks_dir: p.disks_dir,
+        snapshots_dir: p.snapshots_dir,
     };
     if p.idle_timeout_minutes > 0 {
         idle::spawn_reaper(

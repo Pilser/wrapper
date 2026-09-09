@@ -166,7 +166,7 @@ pub async fn me(
         }
         Err(e) => return e,
     };
-    let (status, ip) = vm_view(state, &tenant.id).await;
+    let (status, ip) = vm_view(state, &tenant).await;
     json::ok(serde_json::json!({
         "tenant": auth_ctx::tenant_public(&tenant),
         "vm": {"status": status, "ip": ip},
@@ -186,7 +186,7 @@ pub async fn vm_status(
         }
         Err(e) => return e,
     };
-    let (status, ip) = vm_view(state, &tenant.id).await;
+    let (status, ip) = vm_view(state, &tenant).await;
     json::ok(serde_json::json!({"status": status, "ip": ip}))
 }
 
@@ -222,7 +222,13 @@ pub async fn vm_wake(
 }
 
 /// VM view from the networks reservation (None row = asleep).
-async fn vm_view(state: &AppState, tenant_id: &str) -> (String, Option<String>) {
+/// VM view: "asleep" when there is no row OR the tenant is marked Asleep
+/// (snapshotted to disk — wake restores instead of rebooting).
+async fn vm_view(state: &AppState, tenant: &Tenant) -> (String, Option<String>) {
+    let tenant_id = tenant.id.as_str();
+    if tenant.status.as_str() == TenantStatus::Asleep.as_str() {
+        return ("asleep".to_string(), None);
+    }
     let conn = match state.gdb.conn() {
         Ok(c) => c,
         Err(_) => return ("unknown".to_string(), None),

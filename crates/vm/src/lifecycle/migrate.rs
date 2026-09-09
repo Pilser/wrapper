@@ -51,6 +51,6 @@ async fn migrate_inner(
     mem_file_path: &str,
 ) -> shared::Result<()> {
     snapshot_vm(telemetry, source_client, vm_id, snapshot_path, mem_file_path).await?;
-    restore_vm(telemetry, target_client, vm_id, snapshot_path, mem_file_path).await?;
+    restore_vm(telemetry, target_client, vm_id, snapshot_path, mem_file_path, false).await?;
     Ok(())
 }

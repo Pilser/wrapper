@@ -10,12 +10,13 @@ pub async fn restore_vm(
     vm_id: &str,
     snapshot_path: &str,
     mem_file_path: &str,
+    resume: bool,
 ) -> shared::Result<()> {
     telemetry.builder().level(Level::Info).kind("vm.restore.started").category("vm")
         .vm_id(Some(vm_id.to_string()))
         .message("restore started").emit();
     let result = client
-        .load_snapshot(snapshot_path, mem_file_path)
+        .load_snapshot(snapshot_path, mem_file_path, resume)
         .await
         .map_err(|e| shared::Error::Vm(e.to_string()));
     match result {

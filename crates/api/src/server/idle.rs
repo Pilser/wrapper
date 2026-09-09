@@ -1,14 +1,13 @@
-//! Idle auto-sleep: reap quiet VMs so the fleet scales to zero.
+//! Idle auto-sleep: snapshot quiet VMs so wake restores in ~0.2 s.
 //!
 //! Activity is touched per forwarded request (proxy handler) and per wake.
 //! The reaper runs every 60s: a tenant quiet longer than `idle_timeout`
-//! gets `shutdown_tenant`. Shutdown MUST clear the `networks` row (and the
-//! tenant's vm fields) so the next request re-wakes via `ensure_running`
-//! instead of trusting a stale address.
-//!
-//! Guest shutdown = SIGTERM the Firecracker process (the initramfs guest has
-//! no ACPI handler; SendCtrlAltDel would reboot it). The tap device is
-//! removed and the IP returns to the pool implicitly (reservations table).
+//! gets `shutdown_tenant`:
+//!   1. snapshot the live VM to disk (`snapshots/<tenant>/{vmstate,mem}`);
+//!   2. kill the FC process, delete the tap;
+//!   3. KEEP the networks row + IP, mark tenant Asleep.
+//! Wake then restores from disk (same IP/MAC/tap) instead of rebooting.
+//! If snapshotting fails, fall back to the old kill + row-release path.
 
 use std::time::Duration;
 
@@ -17,10 +16,10 @@ use super::AppState;
 /// Shared activity handle (re-exported so proxy + server use one type).
 pub type ActivityMap = proxy::routing::ActivityMap;
 
-/// Shutdown one tenant's VM and clear every trace of the assignment.
-/// Idempotent: missing process/tap/row is success, not error.
+/// Sleep one tenant's VM (snapshot-first) and clear activity tracking.
+/// Idempotent: missing process/tap/row/snapshot is success, not error.
 pub async fn shutdown_tenant(state: &AppState, tenant_id: &str) -> anyhow::Result<()> {
-    // 1. Find the reservation (need tap name).
+    // 1. Find the reservation (need tap name + socket path).
     let conn = state.gdb.conn()?;
     let rows = db::global::networks::all(&conn).await?;
     let tap = rows
@@ -28,8 +27,28 @@ pub async fn shutdown_tenant(state: &AppState, tenant_id: &str) -> anyhow::Resul
         .find(|r| r.tenant_id == tenant_id)
         .map(|r| r.tap_device.clone());
 
-    // 2. SIGTERM the Firecracker process by its deterministic API socket.
-    //    spawn uses --api-sock /tmp/fc_<tenant>.sock, unique per tenant.
+    // 2. Snapshot-first when a runtime is configured: keep the row on
+    //    success so wake restores (fast path).
+    let mut snapshotted = false;
+    if let Some(runtime) = &state.runtime {
+        match runtime.snapshot_tenant(tenant_id).await {
+            Ok(true) => snapshotted = true,
+            Ok(false) => {}
+            Err(e) => {
+                state
+                    .telemetry
+                    .builder()
+                    .level(telemetry::Level::Warn)
+                    .kind("vm.sleep.snapshot_failed")
+                    .category("vm")
+                    .tenant_id(Some(tenant_id.to_string()))
+                    .message(format!("snapshot failed, killing instead: {e}"))
+                    .emit();
+            }
+        }
+    }
+
+    // 3. SIGTERM the Firecracker process by its deterministic API socket.
     let sock_pattern = format!("/tmp/fc_{tenant_id}.sock");
     let _ = tokio::process::Command::new("pkill")
         .args(["-f", &sock_pattern])
@@ -38,7 +57,8 @@ pub async fn shutdown_tenant(state: &AppState, tenant_id: &str) -> anyhow::Resul
         .status()
         .await;
 
-    // 3. Remove the tap device (best-effort; needs root).
+    // 4. Remove the tap device (best-effort; needs root). It is recreated
+    //    with the identical name on restore (snapshot references it).
     if let Some(tap) = tap {
         let _ = tokio::process::Command::new("ip")
             .args(["link", "del", "dev", &tap])
@@ -48,14 +68,22 @@ pub async fn shutdown_tenant(state: &AppState, tenant_id: &str) -> anyhow::Resul
             .await;
     }
 
-    // 4. Clear DB traces so the next request re-wakes (never stale).
-    let _ = db::global::networks::release_all(&conn, tenant_id).await;
-    if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, tenant_id).await {
-        t.vm_ip = None;
-        t.tap_device = None;
-        t.vm_process_id = None;
-        t.status = shared::TenantStatus::Asleep;
-        let _ = db::global::tenants::update(&conn, &t).await;
+    // 5. DB: snapshotted -> KEEP row + IP, mark Asleep (wake restores).
+    //    Otherwise release everything so the next request fresh-boots.
+    if snapshotted {
+        if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, tenant_id).await {
+            t.status = shared::TenantStatus::Asleep;
+            let _ = db::global::tenants::update(&conn, &t).await;
+        }
+    } else {
+        let _ = db::global::networks::release_all(&conn, tenant_id).await;
+        if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, tenant_id).await {
+            t.vm_ip = None;
+            t.tap_device = None;
+            t.vm_process_id = None;
+            t.status = shared::TenantStatus::Asleep;
+            let _ = db::global::tenants::update(&conn, &t).await;
+        }
     }
     state.activity.remove(tenant_id);
 
@@ -66,7 +94,9 @@ pub async fn shutdown_tenant(state: &AppState, tenant_id: &str) -> anyhow::Resul
         .kind("vm.sleep.completed")
         .category("vm")
         .tenant_id(Some(tenant_id.to_string()))
-        .message(format!("VM asleep for tenant {tenant_id}"))
+        .message(format!(
+            "VM asleep for tenant {tenant_id} (snapshotted={snapshotted})"
+        ))
         .emit();
     Ok(())
 }
@@ -77,8 +107,7 @@ pub fn spawn_reaper(state: AppState, idle_timeout: Duration) {
         return;
     }
     tokio::spawn(async move {
-        let mut tick =
-            tokio::time::interval(Duration::from_secs(60));
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
         loop {
             tick.tick().await;
             for (tenant_id, last) in state.activity.snapshot() {

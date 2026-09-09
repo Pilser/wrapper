@@ -255,6 +255,11 @@ async fn async_main() -> anyhow::Result<()> {
         .parent()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
+    let snapshots_dir = std::path::Path::new(&cfg.database.global_path)
+        .parent()
+        .map(|p| p.join("snapshots").to_string_lossy().to_string())
+        .unwrap_or_else(|| "data/snapshots".to_string());
+    let _ = std::fs::create_dir_all(&snapshots_dir);
     let serve_params = api::server::ServeParams {
         gdb: gdb.clone(),
         telemetry: telemetry.clone(),
@@ -264,6 +269,7 @@ async fn async_main() -> anyhow::Result<()> {
         initrd_path: cfg.firecracker.initrd_path.clone(),
         public_base: cfg.api.public_base.clone(),
         disks_dir,
+        snapshots_dir,
         idle_timeout_minutes: cfg.vm.idle_timeout_minutes,
     };
     let serve_telemetry = telemetry.clone();

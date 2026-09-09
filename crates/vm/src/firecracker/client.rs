@@ -143,15 +143,18 @@ impl FirecrackerClient {
         self.put("/snapshot/create", &body).await
     }
 
-    /// Firecracker `PUT /snapshot/load` helper.
+    /// Firecracker `PUT /snapshot/load` helper. `resume` starts the vCPUs
+    /// immediately (wake path); false leaves the VM Paused (migration).
     pub async fn load_snapshot(
         &self,
         snapshot_path: &str,
         mem_file_path: &str,
+        resume: bool,
     ) -> anyhow::Result<Value> {
         let body = serde_json::json!({
             "snapshot_path": snapshot_path,
             "mem_file_path": mem_file_path,
+            "resume_vm": resume,
         });
         self.put("/snapshot/load", &body).await
     }

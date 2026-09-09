@@ -2,9 +2,15 @@
 //!
 //! `VmRuntime::ensure_running(tenant_id)` is the single entry point the proxy
 //! calls before forwarding a request. It returns the VM's `IP:port` (the
-//! zerowrapper port). If the tenant already has a reachable VM it returns its
-//! address; otherwise it assigns an IP, creates a tap device, boots Firecracker,
-//! and records everything in the DB.
+//! zerowrapper port):
+//! * recorded VM answers TCP -> return it (hot path);
+//! * recorded but dark + snapshot on disk -> RESTORE it (~0.2 s, same IP);
+//! * otherwise -> fresh boot (~9 s), snapshot taken later at idle sleep.
+//!
+//! Snapshots live in `<snapshots_dir>/<tenant_id>/{vmstate,mem}` (host disk,
+//! ~512 MB per sleeping tenant = guest RAM size). The tap name and MAC are
+//! deterministic per tenant, so a restore reattaches the identical NIC the
+//! snapshot was taken with.
 
 use shared::{NetworkConfig, Tenant, TenantStatus, VmTemplate};
 use telemetry::Telemetry;
@@ -36,6 +42,7 @@ pub struct VmRuntime {
     telemetry: Telemetry,
     kernel_path: String,
     initrd_path: String,
+    snapshots_dir: String,
 }
 
 impl VmRuntime {
@@ -54,19 +61,175 @@ impl VmRuntime {
             telemetry,
             kernel_path: kernel_path.into(),
             initrd_path: initrd_path.into(),
+            snapshots_dir: "data/snapshots".to_string(),
         })
+    }
+
+    /// Directory holding per-tenant snapshots (`<dir>/<tenant>/{vmstate,mem}`).
+    pub fn with_snapshots_dir(mut self, dir: impl Into<String>) -> Self {
+        self.snapshots_dir = dir.into();
+        self
+    }
+
+    /// Snapshot files for a tenant (state, mem).
+    pub fn snapshot_paths(&self, tenant_id: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::path::Path::new(&self.snapshots_dir).join(tenant_id);
+        (dir.join("vmstate"), dir.join("mem"))
+    }
+
+    /// Delete a tenant's snapshot files (tenant deletion).
+    pub fn delete_snapshots(&self, tenant_id: &str) -> anyhow::Result<()> {
+        let dir = std::path::Path::new(&self.snapshots_dir).join(tenant_id);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        Ok(())
     }
 
     /// Ensure the tenant's VM is running; return its `IP:port`.
     pub async fn ensure_running(&self, tenant_id: &str) -> anyhow::Result<String> {
-        // 1. If the tenant already has a recorded VM, return it.
-        if let Some(addr) = self.existing_vm(tenant_id).await? {
+        // 1. Recorded VM that answers: hot path.
+        if let Some(addr) = self.live_vm(tenant_id).await? {
             return Ok(addr);
         }
+        // 2. Recorded but dark + snapshot on disk: resume in place (same IP).
+        if let Some(addr) = self.restore_if_snapshotted(tenant_id).await? {
+            return Ok(addr);
+        }
+        // 3. Fresh boot (clears any stale row first).
+        self.fresh_boot(tenant_id).await
+    }
 
-        // 2. Look up the tenant to find their category/template.
+    /// Snapshot the tenant's live VM to disk. Returns true when a usable
+    /// snapshot now exists (idle path calls this before killing the VM and
+    /// then KEEPS the row so wake restores instead of rebooting).
+    pub async fn snapshot_tenant(&self, tenant_id: &str) -> anyhow::Result<bool> {
+        let conn = self.db.conn()?;
+        let rows = db::global::networks::all(&conn).await?;
+        if rows.iter().all(|r| r.tenant_id != tenant_id) {
+            return Ok(false);
+        }
+        let sock = sock_path(tenant_id);
+        if !sock.exists() {
+            return Ok(false);
+        }
+        let (state_path, mem_path) = self.snapshot_paths(tenant_id);
+        if let Some(parent) = state_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let client = FirecrackerClient::new(sock.to_string_lossy().to_string());
+        let ok = crate::lifecycle::snapshot::snapshot_vm(
+            &self.telemetry,
+            &client,
+            tenant_id,
+            &state_path.to_string_lossy(),
+            &mem_path.to_string_lossy(),
+        )
+        .await
+        .is_ok();
+        Ok(ok)
+    }
+
+    /// Recorded address that answers TCP on the zw port.
+    async fn live_vm(&self, tenant_id: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.db.conn()?;
+        let rows = db::global::networks::all(&conn).await?;
+        let Some(res) = rows.into_iter().find(|r| r.tenant_id == tenant_id) else {
+            return Ok(None);
+        };
+        let addr = format!("{ip}:{port}", ip = res.ip_address, port = ZERO_WRAPPER_PORT);
+        if probe_tcp(&addr).await {
+            Ok(Some(addr))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Resume a dark recorded VM from its on-disk snapshot (same IP + tap).
+    /// Returns None when there is no row, no snapshot files, or the restore
+    /// fails (caller falls back to fresh boot).
+    async fn restore_if_snapshotted(
+        &self,
+        tenant_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let conn = self.db.conn()?;
+        let rows = db::global::networks::all(&conn).await?;
+        let Some(res) = rows.into_iter().find(|r| r.tenant_id == tenant_id) else {
+            return Ok(None);
+        };
+        let (state_path, mem_path) = self.snapshot_paths(tenant_id);
+        if !state_path.exists() || !mem_path.exists() {
+            // Stale row, nothing to restore from: drop it for fresh boot.
+            let _ = db::global::networks::release_all(&conn, tenant_id).await;
+            let _ = self.ip_pool.release(tenant_id).await;
+            return Ok(None);
+        }
+        // Recreate the identical host NIC, spawn, load + resume.
+        let tap = tap_name_for_tenant(tenant_id);
+        let gateway = gateway_for_ip(&res.ip_address);
+        if network::bridge::create::ensure_bridge(BRIDGE_NAME, &gateway).is_err() {
+            return Ok(None);
+        }
+        if tap::create_tap(TapCreateOptions {
+            name: tap.clone(),
+            ip: res.ip_address.clone(),
+        })
+        .is_err()
+        {
+            return Ok(None);
+        }
+        let _ = tap::bring_tap_up(&tap);
+        let sock = sock_path(tenant_id);
+        let client = match FirecrackerClient::spawn_firecracker(
+            &self.vm_manager.firecracker_bin,
+            &sock,
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        let ok = crate::lifecycle::restore::restore_vm(
+            &self.telemetry,
+            &client,
+            tenant_id,
+            &state_path.to_string_lossy(),
+            &mem_path.to_string_lossy(),
+            true,
+        )
+        .await
+        .is_ok();
+        if !ok {
+            return Ok(None);
+        }
+        if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, tenant_id).await {
+            t.status = TenantStatus::Ready;
+            let _ = db::global::tenants::update(&conn, &t).await;
+        }
+        let addr = format!("{ip}:{ZERO_WRAPPER_PORT}", ip = res.ip_address);
+        self.telemetry
+            .builder()
+            .level(telemetry::Level::Info)
+            .kind("vm.restore.wake")
+            .category("vm")
+            .tenant_id(Some(tenant_id.to_string()))
+            .message(format!("VM resumed for tenant {tenant_id} at {addr}"))
+            .emit();
+        Ok(Some(addr))
+    }
+
+    /// Full fresh boot for a tenant with no usable VM or snapshot.
+    async fn fresh_boot(&self, tenant_id: &str) -> anyhow::Result<String> {
+        // Look up the tenant to find their category/template.
         let tenant = self.tenant(tenant_id).await?;
         let template = self.template_for_tenant(&tenant).await?;
+
+        // Drop any stale row (dark VM, no snapshot) so the new assignment
+        // is the only record.
+        if let Ok(conn) = self.db.conn() {
+            let _ = db::global::networks::release_all(&conn, tenant_id).await;
+        }
+        let _ = self.ip_pool.release(tenant_id).await;
 
         // 3. Assign an IP from the pool.
         let ip = self
@@ -97,7 +260,7 @@ impl VmRuntime {
         Self::enable_forwarding_best_effort(&self.telemetry, &ip);
 
         // 5. Boot Firecracker for this tenant.
-        let sock = std::path::PathBuf::from(format!("/tmp/fc_{tenant_id}.sock"));
+        let sock = sock_path(tenant_id);
         let client =
             FirecrackerClient::spawn_firecracker(&self.vm_manager.firecracker_bin, &sock).await?;
 
@@ -170,16 +333,6 @@ impl VmRuntime {
         Ok(n)
     }
 
-    /// Return the existing `IP:port` if the tenant already has a recorded VM.
-    async fn existing_vm(&self, tenant_id: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.db.conn()?;
-        let rows = db::global::networks::all(&conn).await?;
-        if let Some(res) = rows.into_iter().find(|r| r.tenant_id == tenant_id) {
-            return Ok(Some(format!("{ip}:{port}", ip = res.ip_address, port = ZERO_WRAPPER_PORT)));
-        }
-        Ok(None)
-    }
-
     /// Fetch the tenant row.
     async fn tenant(&self, tenant_id: &str) -> anyhow::Result<Tenant> {
         let conn = self.db.conn()?;
@@ -199,8 +352,7 @@ impl VmRuntime {
             .ok_or_else(|| anyhow::anyhow!("vm template {} not found", category.vm_template_id))
     }
 
-    /// Best-effort guest egress: enable IPv4 forwarding and masquerade the
-    /// tenant /24. Failures only warn (host→guest still works without NAT);
+    /// Best-effort guest egress: enable IPv4 forwarding and masquerade the    /// tenant /24. Failures only warn (host→guest still works without NAT);
     /// needs root + iptables.
     fn enable_forwarding_best_effort(telemetry: &Telemetry, vm_ip: &str) {
         let cidr = format!("{}/24", gateway_for_ip(vm_ip));
@@ -234,4 +386,17 @@ impl VmRuntime {
             }
         }
     }
+}
+
+/// Deterministic API socket per tenant (spawn, snapshot, reaper agree).
+fn sock_path(tenant_id: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("/tmp/fc_{tenant_id}.sock"))
+}
+
+/// Fast TCP probe (800ms) — true when something accepts on `IP:port`.
+async fn probe_tcp(addr: &str) -> bool {
+    let fut = tokio::net::TcpStream::connect(addr);
+    tokio::time::timeout(std::time::Duration::from_millis(800), fut)
+        .await
+        .is_ok_and(|r| r.is_ok())
 }

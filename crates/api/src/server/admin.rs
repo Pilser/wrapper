@@ -292,6 +292,9 @@ pub async fn tenants_delete(
     }
     let id = json::last_seg(&req);
     let _ = idle::shutdown_tenant(state, &id).await;
+    if let Some(runtime) = &state.runtime {
+        let _ = runtime.delete_snapshots(&id);
+    }
     let conn = match state.gdb.conn() {
         Ok(c) => c,
         Err(_) => return json::internal(),
