@@ -76,6 +76,18 @@ pub async fn update(conn: &Connection, t: &Tenant) -> anyhow::Result<()> {
 }
 
 /// Record the VM IP assigned to a tenant after boot.
+/// Targeted status transition. Prefer this over full-row `update()` for
+/// lifecycle changes: full-row writes built from a stale read-back would
+/// clobber concurrent status transitions (lost update).
+pub async fn set_status(conn: &Connection, tenant_id: &str, status: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE tenants SET status = ?1 WHERE id = ?2",
+        (status, tenant_id),
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn set_vm_address(conn: &Connection, tenant_id: &str, vm_ip: &str) -> anyhow::Result<()> {
     conn.execute(
         "UPDATE tenants SET vm_ip = ?1, last_login = ?2 WHERE id = ?3",

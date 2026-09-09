@@ -273,11 +273,21 @@ pub async fn tenants_update(
         tenant.category_id = c;
         tenant.category_changed_at = Some(shared::now_rfc3339());
     }
-    if let Some(s) = str_field(&body, "status") {
-        tenant.status = parse_tenant_status(&s);
-    }
+    // Status goes through a targeted write (never part of the full-row
+    // write: the row was read moments ago and may already be stale).
+    let status_override = str_field(&body, "status");
     if db::global::tenants::update(&conn, &tenant).await.is_err() {
         return json::internal();
+    }
+    if let Some(s) = status_override {
+        let st = parse_tenant_status(&s);
+        if db::global::tenants::set_status(&conn, &id, st.as_str())
+            .await
+            .is_err()
+        {
+            return json::internal();
+        }
+        tenant.status = st;
     }
     json::ok(serde_json::json!({"tenant": auth_ctx::tenant_public(&tenant)}))
 }
@@ -344,7 +354,10 @@ async fn set_suspended(
     } else {
         TenantStatus::Active
     };
-    if db::global::tenants::update(&conn, &tenant).await.is_err() {
+    if db::global::tenants::set_status(&conn, &id, tenant.status.as_str())
+        .await
+        .is_err()
+    {
         return json::internal();
     }
     if suspended {

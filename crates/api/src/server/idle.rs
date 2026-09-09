@@ -70,20 +70,29 @@ pub async fn shutdown_tenant(state: &AppState, tenant_id: &str) -> anyhow::Resul
 
     // 5. DB: snapshotted -> KEEP row + IP, mark Asleep (wake restores).
     //    Otherwise release everything so the next request fresh-boots.
+    //    Status uses a targeted write (never a full-row write from a
+    //    possibly stale read-back: lost-update hazard).
     if snapshotted {
-        if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, tenant_id).await {
-            t.status = shared::TenantStatus::Asleep;
-            let _ = db::global::tenants::update(&conn, &t).await;
-        }
+        let _ = db::global::tenants::set_status(
+            &conn,
+            tenant_id,
+            shared::TenantStatus::Asleep.as_str(),
+        )
+        .await;
     } else {
         let _ = db::global::networks::release_all(&conn, tenant_id).await;
         if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, tenant_id).await {
             t.vm_ip = None;
             t.tap_device = None;
             t.vm_process_id = None;
-            t.status = shared::TenantStatus::Asleep;
             let _ = db::global::tenants::update(&conn, &t).await;
         }
+        let _ = db::global::tenants::set_status(
+            &conn,
+            tenant_id,
+            shared::TenantStatus::Asleep.as_str(),
+        )
+        .await;
     }
     state.activity.remove(tenant_id);
 

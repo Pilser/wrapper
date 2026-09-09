@@ -202,10 +202,7 @@ impl VmRuntime {
         if !ok {
             return Ok(None);
         }
-        if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, tenant_id).await {
-            t.status = TenantStatus::Ready;
-            let _ = db::global::tenants::update(&conn, &t).await;
-        }
+        let _ = db::global::tenants::set_status(&conn, tenant_id, TenantStatus::Ready.as_str()).await;
         let addr = format!("{ip}:{ZERO_WRAPPER_PORT}", ip = res.ip_address);
         self.telemetry
             .builder()
@@ -302,10 +299,7 @@ impl VmRuntime {
         db::global::networks::reserve(&conn, tenant_id, &ip, &tap).await?;
         db::global::tenants::set_vm_address(&conn, tenant_id, &ip).await?;
         // Mark Ready (a reaped tenant was Asleep; a fresh one Active).
-        if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, tenant_id).await {
-            t.status = TenantStatus::Ready;
-            let _ = db::global::tenants::update(&conn, &t).await;
-        }
+        let _ = db::global::tenants::set_status(&conn, tenant_id, TenantStatus::Ready.as_str()).await;
 
         let addr = format!("{ip}:{ZERO_WRAPPER_PORT}");
         self.telemetry
