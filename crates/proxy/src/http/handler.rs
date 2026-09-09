@@ -413,6 +413,11 @@ impl HttpHandler {
             .await
             .map_err(|e| WrapperError::Proxy(format!("read upstream body: {e}")))?
             .to_bytes();
+        let bytes = rewrite_base_href(
+            bytes,
+            res_parts.headers.get(hyper::header::CONTENT_TYPE),
+            tenant_id,
+        );
         // Plant the tenant cookie so prefix-less follow-ups (absolute
         // assets, and WebSocket handshakes which carry no Referer) resolve
         // to this tenant. Browsers scope it to the proxy origin (Path=/).
@@ -424,6 +429,51 @@ impl HttpHandler {
         }
         Ok(hyper::Response::from_parts(res_parts, Full::new(bytes)))
     }
+}
+
+/// Rewrite `<base href="/">` in HTML bodies to the tenant-prefixed base so
+/// the guest app builds routable URLs itself (zw's JS reads the base tag:
+/// `/tenant_<id>/ws` instead of root `/ws`, relative assets stay under the
+/// prefix). Without this, root-absolute WS handshakes carry no tenant
+/// signal at all — browsers send no Referer on WS, Origin has no path, and
+/// third-party cookies get rejected — and the handshake 500s. Standard
+/// reverse-proxy base-tag rewriting; capped at 4 MB bodies.
+fn rewrite_base_href(
+    body: Bytes,
+    content_type: Option<&hyper::header::HeaderValue>,
+    tenant_id: &str,
+) -> Bytes {
+    if tenant_id == "default" || body.len() > 4 * 1024 * 1024 {
+        return body;
+    }
+    let is_html = content_type
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/html"));
+    if !is_html {
+        return body;
+    }
+    let replacement = format!("<base href=\"/tenant_{tenant_id}/\">");
+    let replacement_sq = format!("<base href='/tenant_{tenant_id}/'>");
+    let mut text = String::from_utf8_lossy(&body).into_owned();
+    let mut count = 0;
+    while let Some(pos) = text.find("<base href=\"/\">") {
+        text.replace_range(pos..pos + 15, &replacement);
+        count += 1;
+        if count > 4 {
+            break;
+        }
+    }
+    while let Some(pos) = text.find("<base href='/'>") {
+        text.replace_range(pos..pos + 15, &replacement_sq);
+        count += 1;
+        if count > 4 {
+            break;
+        }
+    }
+    if count == 0 {
+        return body;
+    }
+    Bytes::from(text)
 }
 
 /// Strip a leading `/tenant_<id>` segment (segment-boundary aware) so the
