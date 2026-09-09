@@ -28,8 +28,13 @@ impl Router {
         }
         let path = req.uri().path();
         let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
-        if first.starts_with("tenant_") {
-            return first.to_string();
+        // Public links use /tenant_<id>/... but the canonical id is RAW
+        // (DB rows, sockets, taps all key on it): strip the marker here so
+        // header form ("abc") and path form ("/tenant_abc/...") converge.
+        if let Some(raw) = first.strip_prefix("tenant_") {
+            if !raw.is_empty() {
+                return raw.to_string();
+            }
         }
         "default".to_string()
     }
