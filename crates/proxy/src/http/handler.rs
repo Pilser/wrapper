@@ -141,6 +141,19 @@ impl HttpHandler {
             ));
         }
 
+        // WebSocket upgrades bypass transforms+sanitize (which strips the
+        // Upgrade/Connection headers) and are tunneled byte-for-byte to zw:
+        // streams, file downloads and tagged images must flow without
+        // blocking. Same wake/probe/wait semantics as plain HTTP below.
+        if crate::websocket::is_upgrade_request(&req) {
+            let tenant_id = self.router.route_with_telemetry(&req).await?;
+            let (upstream_addr, woken) = self.resolve_upstream(&tenant_id).await?;
+            if woken {
+                self.warn_if_slow(&upstream_addr, &tenant_id).await;
+            }
+            return self.tunnel_upgrade(upstream_addr, tenant_id, req).await;
+        }
+
         self.request_transform.apply(&mut req)?;
         crate::transform::sanitize(req.headers_mut());
 
@@ -152,35 +165,9 @@ impl HttpHandler {
         // must re-wake, never black-hole into a stale IP. A freshly woken
         // VM needs ~40s before zw answers, so the wake path WAITS (retry
         // probe) instead of failing the request that triggered the boot.
-        let upstream_addr = self.lookup.lookup(&tenant_id).await?;
-        let (upstream_addr, woken) = if upstream_addr == self.lookup.default_target() {
-            (self.wake(&tenant_id).await?, true)
-        } else if probe_upstream(&upstream_addr).await {
-            (upstream_addr, false)
-        } else {
-            self.telemetry
-                .builder()
-                .level(telemetry::Level::Warn)
-                .kind("proxy.vm.unreachable")
-                .category("proxy")
-                .source("proxy::http::handler")
-                .message(format!(
-                    "recorded VM {upstream_addr} for {tenant_id} unreachable, re-waking"
-                ))
-                .emit();
-            (self.wake(&tenant_id).await?, true)
-        };
-        if woken && !wait_for_zw(&upstream_addr).await {
-            self.telemetry
-                .builder()
-                .level(telemetry::Level::Warn)
-                .kind("proxy.vm.boot_slow")
-                .category("proxy")
-                .source("proxy::http::handler")
-                .message(format!(
-                    "VM {upstream_addr} for {tenant_id} still dark after wake; forwarding anyway"
-                ))
-                .emit();
+        let (upstream_addr, woken) = self.resolve_upstream(&tenant_id).await?;
+        if woken {
+            self.warn_if_slow(&upstream_addr, &tenant_id).await;
         }
 
         self.telemetry
@@ -219,6 +206,164 @@ impl HttpHandler {
         self.runtime.ensure_running(tenant_id).await.map_err(|e| {
             WrapperError::Proxy(format!("wake VM for {tenant_id}: {e}"))
         })
+    }
+
+    /// Resolve tenant -> upstream `IP:port`, waking when missing or dead.
+    /// Returns the address plus whether a (re)wake just happened (callers
+    /// that need a live app behind the address should wait on zw next).
+    async fn resolve_upstream(&self, tenant_id: &str) -> Result<(String, bool)> {
+        let upstream_addr = self.lookup.lookup(tenant_id).await?;
+        if upstream_addr == self.lookup.default_target() {
+            return Ok((self.wake(tenant_id).await?, true));
+        }
+        if probe_upstream(&upstream_addr).await {
+            return Ok((upstream_addr, false));
+        }
+        self.telemetry
+            .builder()
+            .level(telemetry::Level::Warn)
+            .kind("proxy.vm.unreachable")
+            .category("proxy")
+            .source("proxy::http::handler")
+            .message(format!(
+                "recorded VM {upstream_addr} for {tenant_id} unreachable, re-waking"
+            ))
+            .emit();
+        Ok((self.wake(tenant_id).await?, true))
+    }
+
+    /// Warn when a freshly woken VM still doesn't answer (boot slower than
+    /// the wait budget). Callers forward anyway and surface the real error.
+    async fn warn_if_slow(&self, upstream_addr: &str, tenant_id: &str) {
+        if !wait_for_zw(upstream_addr).await {
+            self.telemetry
+                .builder()
+                .level(telemetry::Level::Warn)
+                .kind("proxy.vm.boot_slow")
+                .category("proxy")
+                .source("proxy::http::handler")
+                .message(format!(
+                    "VM {upstream_addr} for {tenant_id} still dark after wake; forwarding anyway"
+                ))
+                .emit();
+        }
+    }
+
+    /// Tunnel a WebSocket upgrade to zw byte-for-byte (streams, file/image
+    /// downloads). The 101 handshake headers come straight from zw; after
+    /// that both directions are piped until either side closes. Message
+    /// framing is zw's business — the proxy never decodes WS frames.
+    async fn tunnel_upgrade(
+        &self,
+        upstream_addr: String,
+        tenant_id: String,
+        req: hyper::Request<hyper::body::Incoming>,
+    ) -> Result<hyper::Response<Full<Bytes>>> {
+        if let Some(activity) = &self.activity {
+            activity.touch(&tenant_id);
+        }
+        let (mut parts, body) = req.into_parts();
+        let path_and_query = parts
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str().to_string())
+            .unwrap_or_else(|| "/".to_string());
+        let clean_path = strip_tenant_prefix(&path_and_query, &tenant_id);
+        let uri: hyper::Uri = format!("http://{upstream_addr}{clean_path}")
+            .parse()
+            .map_err(|e| WrapperError::Proxy(format!("bad upstream uri: {e}")))?;
+        parts.uri = uri;
+        let host = upstream_addr
+            .parse::<hyper::header::HeaderValue>()
+            .map_err(|e| WrapperError::Proxy(format!("bad upstream host: {e}")))?;
+        parts.headers.insert(hyper::header::HOST, host);
+        if let Ok(id) = tenant_id.parse::<hyper::header::HeaderValue>() {
+            parts.headers.insert("x-tenant-id", id);
+        }
+        // Upgrade handshakes are GETs without bodies; the server side has
+        // already parsed the headers, so the body stream is untouched.
+        // Keep the handshake headers (key/version/upgrade/connection),
+        // rewrite Host, stamp the tenant.
+        let client_req = hyper::Request::from_parts(parts, body);
+        let mut up_builder = hyper::Request::builder()
+            .method(hyper::Method::GET)
+            .uri(format!("http://{upstream_addr}{clean_path}"));
+        for (name, value) in client_req.headers().iter() {
+            if *name != hyper::header::HOST {
+                up_builder = up_builder.header(name.clone(), value.clone());
+            }
+        }
+        if let Ok(h) = upstream_addr.parse::<hyper::header::HeaderValue>() {
+            up_builder = up_builder.header(hyper::header::HOST, h);
+        }
+        if let Ok(id) = tenant_id.parse::<hyper::header::HeaderValue>() {
+            up_builder = up_builder.header("x-tenant-id", id);
+        }
+        let up_req = up_builder
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| WrapperError::Proxy(format!("bad upstream ws request: {e}")))?;
+
+        let up_res = self
+            .client
+            .request(up_req)
+            .await
+            .map_err(|e| WrapperError::Proxy(format!("upstream ws {upstream_addr}: {e}")))?;
+        if up_res.status() != hyper::StatusCode::SWITCHING_PROTOCOLS {
+            // zw refused the upgrade (e.g. 404/400): pass the response back.
+            let (res_parts, res_body) = up_res.into_parts();
+            let bytes: Bytes = res_body
+                .collect()
+                .await
+                .map_err(|e| WrapperError::Proxy(format!("read upstream ws body: {e}")))?
+                .to_bytes();
+            return Ok(hyper::Response::from_parts(res_parts, Full::new(bytes)));
+        }
+        // 101: pipe both upgraded streams until either side closes.
+        let mut builder = hyper::Response::builder().status(hyper::StatusCode::SWITCHING_PROTOCOLS);
+        for (name, value) in up_res.headers().iter() {
+            builder = builder.header(name.clone(), value.clone());
+        }
+        let res = builder
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| WrapperError::Proxy(format!("ws 101 response: {e}")))?;
+        let telemetry = self.telemetry.clone();
+        tokio::spawn(async move {
+            match (
+                hyper::upgrade::on(client_req).await,
+                hyper::upgrade::on(up_res).await,
+            ) {
+                (Ok(client_io), Ok(upstream_io)) => {
+                    let mut client_io = hyper_util::rt::TokioIo::new(client_io);
+                    let mut upstream_io = hyper_util::rt::TokioIo::new(upstream_io);
+                    let _ = tokio::io::copy_bidirectional(&mut client_io, &mut upstream_io).await;
+                }
+                (c, u) => {
+                    telemetry
+                        .builder()
+                        .level(telemetry::Level::Warn)
+                        .kind("proxy.websocket.failed")
+                        .category("proxy")
+                        .source("proxy::http::handler")
+                        .message(format!(
+                            "ws tunnel upgrade failed client_ok={} upstream_ok={}",
+                            c.is_ok(),
+                            u.is_ok()
+                        ))
+                        .emit();
+                }
+            }
+        });
+        self.telemetry
+            .builder()
+            .level(Level::Info)
+            .kind("proxy.websocket.tunneled")
+            .category("proxy")
+            .source("proxy::http::handler")
+            .message(format!(
+                "ws tunneled {clean_path} tenant={tenant_id} to {upstream_addr}"
+            ))
+            .emit();
+        Ok(res)
     }
 
     /// Forward one request to `upstream_addr`, copying method/uri/headers/body.    ///
