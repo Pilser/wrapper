@@ -402,6 +402,10 @@ impl VmRuntime {
 }
 
 /// Deterministic API socket per tenant (spawn, snapshot, reaper agree).
+pub fn fc_socket_path(tenant_id: &str) -> std::path::PathBuf {
+    sock_path(tenant_id)
+}
+
 fn sock_path(tenant_id: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/fc_{tenant_id}.sock"))
 }

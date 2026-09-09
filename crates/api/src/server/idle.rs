@@ -18,7 +18,30 @@ pub type ActivityMap = proxy::routing::ActivityMap;
 
 /// Sleep one tenant's VM (snapshot-first) and clear activity tracking.
 /// Idempotent: missing process/tap/row/snapshot is success, not error.
+/// A tenant already sleeping on disk (no live socket + snapshot files
+/// present) is left alone — its row must NEVER be released, or the next
+/// wake fresh-boots instead of restoring.
 pub async fn shutdown_tenant(state: &AppState, tenant_id: &str) -> anyhow::Result<()> {
+    // 0. Already sleeping on disk? Just ensure the Asleep mark and stop.
+    //    (The reaper re-scans every 60s; without this it would snapshot-fail
+    //    on the dead socket and take the kill path, releasing the row and
+    //    orphaning the snapshot.)
+    if let Some(runtime) = &state.runtime {
+        let (st, mem) = runtime.snapshot_paths(tenant_id);
+        if !vm::runtime::fc_socket_path(tenant_id).exists() && st.exists() && mem.exists() {
+            if let Ok(conn) = state.gdb.conn() {
+                let _ = db::global::tenants::set_status(
+                    &conn,
+                    tenant_id,
+                    shared::TenantStatus::Asleep.as_str(),
+                )
+                .await;
+            }
+            state.activity.remove(tenant_id);
+            return Ok(());
+        }
+    }
+
     // 1. Find the reservation (need tap name + socket path).
     let conn = state.gdb.conn()?;
     let rows = db::global::networks::all(&conn).await?;
@@ -120,17 +143,23 @@ pub fn spawn_reaper(state: AppState, idle_timeout: Duration) {
         loop {
             tick.tick().await;
             for (tenant_id, last) in state.activity.snapshot() {
-                if last.elapsed() >= idle_timeout {
+                if last.elapsed() >= idle_timeout
+                    && !tenant_asleep(&state, &tenant_id).await
+                {
                     let _ = shutdown_tenant(&state, &tenant_id).await;
                 }
             }
             // Also reap reservations with NO recorded activity at all
             // (VMs booted before this process started): treat the
             // reservation as active once so they get a full timeout.
+            // Tenants already marked Asleep are skipped — they are done,
+            // re-touching them would re-queue them for a second shutdown.
             if let Ok(conn) = state.gdb.conn() {
                 if let Ok(rows) = db::global::networks::all(&conn).await {
                     for row in rows {
-                        if state.activity.last(&row.tenant_id).is_none() {
+                        if state.activity.last(&row.tenant_id).is_none()
+                            && !tenant_asleep(&state, &row.tenant_id).await
+                        {
                             state.activity.touch(&row.tenant_id);
                         }
                     }
@@ -138,4 +167,16 @@ pub fn spawn_reaper(state: AppState, idle_timeout: Duration) {
             }
         }
     });
+}
+
+/// True when the tenant row is marked Asleep (sleeping or sleepless-dead).
+async fn tenant_asleep(state: &AppState, tenant_id: &str) -> bool {
+    let Ok(conn) = state.gdb.conn() else {
+        return false;
+    };
+    match db::global::tenants::get_by_id(&conn, tenant_id).await {
+        Ok(Some(t)) => t.status.as_str() == shared::TenantStatus::Asleep.as_str(),
+        _ => false,
+    }
+}
 }
