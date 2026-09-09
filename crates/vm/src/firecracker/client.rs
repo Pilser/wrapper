@@ -52,7 +52,7 @@ impl FirecrackerClient {
             .arg("--api-sock")
             .arg(&sock_str)
             .arg("--id")
-            .arg(format!("fc_{}", std::process::id()))
+            .arg(format!("fc-{}", std::process::id()))
             .stdin(std::process::Stdio::null())
             .stdout(log_file)
             .stderr(log_err)
