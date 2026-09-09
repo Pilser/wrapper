@@ -212,7 +212,12 @@ pub async fn vm_wake(
             let ip = addr.split(':').next().unwrap_or("").to_string();
             json::accepted(serde_json::json!({"status": "running", "ip": ip}))
         }
-        Err(_) => json::unavailable("vm boot failed"),
+        // Detail is exposed (not just "failed") so frontends and operators
+        // can diagnose boots without host shell access.
+        Err(e) => json::json(
+            hyper::StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({"error": "vm boot failed", "detail": e.to_string()}),
+        ),
     }
 }
 
