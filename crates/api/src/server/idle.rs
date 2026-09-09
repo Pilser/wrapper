@@ -179,4 +179,3 @@ async fn tenant_asleep(state: &AppState, tenant_id: &str) -> bool {
         _ => false,
     }
 }
-}
