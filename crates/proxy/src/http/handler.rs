@@ -394,6 +394,13 @@ impl HttpHandler {
         if let Ok(id) = tenant_id.parse::<hyper::header::HeaderValue>() {
             parts.headers.insert("x-tenant-id", id);
         }
+        // Read before `parts` moves into the upstream request: browsers flag
+        // cross-site iframe loads, where a Lax cookie would only be rejected.
+        let cross_site = parts
+            .headers
+            .get("sec-fetch-site")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("cross-site"));
 
         let body_bytes = body
             .collect()
@@ -422,7 +429,11 @@ impl HttpHandler {
         // assets, and WebSocket handshakes which carry no Referer) resolve
         // to this tenant. Browsers scope it to the proxy origin (Path=/).
         // Routing hint only — session auth still uses Bearer tokens.
-        if tenant_id != "default" {
+        // Skipped for cross-site iframes (dev server / Pages embedding):
+        // third-party Lax cookies are rejected with a console warning, so
+        // planting one is pure noise there. Those contexts are covered by
+        // the base-tag rewrite (prefixed WS/asset URLs) instead.
+        if tenant_id != "default" && !cross_site {
             if let Ok(cookie) = format!("zw_tenant={tenant_id}; Path=/; SameSite=Lax").parse() {
                 res_parts.headers.insert(hyper::header::SET_COOKIE, cookie);
             }
