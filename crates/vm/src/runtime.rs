@@ -200,6 +200,22 @@ impl VmRuntime {
         .await
         .is_ok();
         if !ok {
+            // Preserve evidence: the fresh-boot fallback below truncates the
+            // per-VM FC log (same deterministic path), destroying the load
+            // error. Keep a copy next to the socket.
+            let failed_log = sock.with_extension("restore-failed.log");
+            let _ = std::fs::copy(sock.with_extension("log"), &failed_log);
+            self.telemetry
+                .builder()
+                .level(telemetry::Level::Warn)
+                .kind("vm.restore.fallback")
+                .category("vm")
+                .tenant_id(Some(tenant_id.to_string()))
+                .message(format!(
+                    "restore failed, falling back to fresh boot (see {})",
+                    failed_log.display()
+                ))
+                .emit();
             return Ok(None);
         }
         let _ = db::global::tenants::set_status(&conn, tenant_id, TenantStatus::Ready.as_str()).await;
