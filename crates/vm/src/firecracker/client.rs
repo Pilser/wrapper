@@ -81,13 +81,30 @@ impl FirecrackerClient {
         body: Option<&Value>,
     ) -> anyhow::Result<Value> {
         let raw = encode_http_request(method, path, body);
-        let stream = tokio::net::UnixStream::connect(std::path::Path::new(&self.socket)).await?;
-        let (mut rx, mut tx) = stream.into_split();
-        tx.write_all(&raw).await?;
-        tx.shutdown().await?;
-        let mut buf = Vec::new();
-        rx.read_to_end(&mut buf).await?;
-        decode_http_body(&buf)
+        // The socket FILE appears microseconds before firecracker listen()s
+        // on it; a single connect then fails ECONNREFUSED instantly and the
+        // boot dies with no PUT ever reaching the server. Retry briefly.
+        let mut last_err = String::new();
+        for _ in 0..50 {
+            match tokio::net::UnixStream::connect(std::path::Path::new(&self.socket)).await {
+                Ok(stream) => {
+                    let (mut rx, mut tx) = stream.into_split();
+                    tx.write_all(&raw).await?;
+                    tx.shutdown().await?;
+                    let mut buf = Vec::new();
+                    rx.read_to_end(&mut buf).await?;
+                    return decode_http_body(&buf);
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "connect {} failed: {last_err}",
+            self.socket
+        ))
     }
 
     pub async fn put(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
