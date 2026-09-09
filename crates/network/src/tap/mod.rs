@@ -5,7 +5,7 @@ pub mod create;
 pub mod destroy;
 pub mod list;
 
-pub use configure::configure_tap;
+pub use configure::{bring_tap_up, configure_tap};
 pub use create::{create_tap, TapCreateOptions};
 pub use destroy::destroy_tap;
 pub use list::list_taps;

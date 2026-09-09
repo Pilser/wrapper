@@ -11,3 +11,9 @@ pub fn attach_tap_to_bridge(tap: &str, bridge: &str) -> anyhow::Result<()> {
 pub fn configure_tap(name: &str, ip: &str) -> anyhow::Result<()> {
     run_ip(&["addr", "add", &format!("{ip}/24"), "dev", name])
 }
+
+/// Bring a tap device up (required after creation/attach before Firecracker
+/// can send packets through it).
+pub fn bring_tap_up(name: &str) -> anyhow::Result<()> {
+    run_ip(&["link", "set", "dev", name, "up"])
+}

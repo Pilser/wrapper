@@ -10,11 +10,16 @@ use shared::{NetworkConfig, Tenant, VmTemplate};
 use telemetry::Telemetry;
 
 use crate::firecracker::FirecrackerClient;
+use crate::firecracker::network::{gateway_for_ip, guest_mac_for_tenant, tap_name_for_tenant};
+use crate::lifecycle::boot::NetAttach;
 use crate::manager::VmManager;
 
 // Network helpers live in the `network` crate; re-exported here for convenience.
 use network::ip::IpPool;
 use network::tap::{self, TapCreateOptions};
+
+/// Host bridge all tenant taps attach to. Holds the gateway address.
+const BRIDGE_NAME: &str = "br0";
 
 /// The port the zerowrapper listens on inside every VM.
 pub const ZERO_WRAPPER_PORT: u16 = 9092;
@@ -70,13 +75,22 @@ impl VmRuntime {
             .await?
             .ok_or_else(|| anyhow::anyhow!("IP pool exhausted"))?;
 
-        // 4. Create + attach a tap device.
-        let tap = format!("tap_{}", &tenant_id[..8]);
+        // 4. Host networking (needs root): bridge with gateway address,
+        // tenant tap attached to the bridge, tap up, forwarding/NAT for
+        // guest egress. NAT is best-effort: without it the guest is still
+        // reachable from the host (SSH :2222, zw :9092, status :8080).
+        let gateway = gateway_for_ip(&ip);
+        let tap = tap_name_for_tenant(tenant_id);
+        let guest_mac = guest_mac_for_tenant(tenant_id);
+        network::bridge::create::ensure_bridge(BRIDGE_NAME, &gateway)?;
         tap::create_tap(TapCreateOptions {
             name: tap.clone(),
             ip: ip.clone(),
         })?;
-        tap::configure_tap(&tap, &ip)?;
+        // Tolerate "already assigned" when reusing a tap from a previous run.
+        let _ = tap::configure_tap(&tap, &ip);
+        tap::bring_tap_up(&tap)?;
+        Self::enable_forwarding_best_effort(&self.telemetry, &ip);
 
         // 5. Boot Firecracker for this tenant.
         let sock = std::path::PathBuf::from(format!("/tmp/fc_{tenant_id}.sock"));
@@ -106,9 +120,15 @@ impl VmRuntime {
             created_at: template.created_at,
             updated_at: template.updated_at,
         };
-        crate::lifecycle::boot::boot_vm(&self.telemetry, &client, tenant_id, &boot_template)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        crate::lifecycle::boot::boot_vm_with_net(
+            &self.telemetry,
+            &client,
+            tenant_id,
+            &boot_template,
+            Some(&NetAttach::new(&tap, &guest_mac, &ip)),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         // 6. Record the network assignment + VM process in the DB.
         let conn = self.db.conn()?;
@@ -155,5 +175,41 @@ impl VmRuntime {
         db::global::vm_templates::get_by_id(&conn, &category.vm_template_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("vm template {} not found", category.vm_template_id))
+    }
+
+    /// Best-effort guest egress: enable IPv4 forwarding and masquerade the
+    /// tenant /24. Failures only warn (host→guest still works without NAT);
+    /// needs root + iptables.
+    fn enable_forwarding_best_effort(telemetry: &Telemetry, vm_ip: &str) {
+        let cidr = format!("{}/24", gateway_for_ip(vm_ip));
+        let steps: &[(&str, &[&str])] = &[
+            ("sysctl", &["-w", "net.ipv4.ip_forward=1"]),
+            (
+                "iptables",
+                &[
+                    "-t", "nat", "-A", "POSTROUTING", "-s", &cidr, "-j", "MASQUERADE",
+                ],
+            ),
+            ("iptables", &["-A", "FORWARD", "-s", &cidr, "-j", "ACCEPT"]),
+        ];
+        // NOTE: `cidr` is borrowed by `steps`; keep it alive for the loop.
+        for (bin, args) in steps {
+            let ok = std::process::Command::new(bin)
+                .args(*args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                telemetry
+                    .builder()
+                    .level(telemetry::Level::Warn)
+                    .kind("vm.net.nat_skipped")
+                    .category("vm")
+                    .message(format!("best-effort net step failed: {bin} {args:?}"))
+                    .emit();
+            }
+        }
     }
 }
