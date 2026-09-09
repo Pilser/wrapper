@@ -137,13 +137,18 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
                 async move {
                     // Peek before moving: /api/* is served locally, every
                     // other path goes to the tenant's zw (wake-on-request).
+                    // Browsers (Cloudflare Pages frontend) need CORS: answer
+                    // preflights and tag every /api response.
                     let path = req.uri().path().to_string();
                     let is_api = path == "/api" || path.starts_with("/api/");
                     if is_api {
-                        if let Some(res) = route(&state, req).await {
-                            return Ok::<_, anyhow::Error>(res);
+                        if req.method() == hyper::Method::OPTIONS {
+                            return Ok::<_, anyhow::Error>(json::cors_preflight());
                         }
-                        return Ok(json::not_found("unknown api route"));
+                        if let Some(res) = route(&state, req).await {
+                            return Ok(json::with_cors(res));
+                        }
+                        return Ok(json::with_cors(json::not_found("unknown api route")));
                     }
                     Ok(handler.handle(req).await.unwrap_or_else(|e| {
                         json::json(

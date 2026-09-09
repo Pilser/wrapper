@@ -80,6 +80,39 @@ pub fn internal() -> ApiResponse {
     )
 }
 
+/// CORS preflight answer for browser frontends (Cloudflare Pages).
+/// Token auth uses `Authorization` (Bearer), never cookies, so a wildcard
+/// origin is safe here; lock down to the Pages domain in production.
+pub fn cors_preflight() -> ApiResponse {
+    with_cors(
+        hyper::Response::builder()
+            .status(hyper::StatusCode::NO_CONTENT)
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+}
+
+/// Tag a response with the CORS headers browsers require.
+pub fn with_cors(mut res: ApiResponse) -> ApiResponse {
+    res.headers_mut().insert(
+        hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        hyper::header::HeaderValue::from_static("*"),
+    );
+    res.headers_mut().insert(
+        hyper::header::ACCESS_CONTROL_ALLOW_METHODS,
+        hyper::header::HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"),
+    );
+    res.headers_mut().insert(
+        hyper::header::ACCESS_CONTROL_ALLOW_HEADERS,
+        hyper::header::HeaderValue::from_static("Authorization, Content-Type"),
+    );
+    res.headers_mut().insert(
+        hyper::header::ACCESS_CONTROL_MAX_AGE,
+        hyper::header::HeaderValue::from_static("86400"),
+    );
+    res
+}
+
 /// Read a JSON body (1MB cap). Err responses are already shaped.
 pub async fn read_json(
     req: hyper::Request<hyper::body::Incoming>,
