@@ -42,16 +42,31 @@ impl Router {
         // (http://host:18080/tenant_<id>/...), which browsers always send
         // same-origin. Without this every asset 500s (and the MIME error
         // below is just our JSON 500 served as .js/.css).
-        if let Some(referer) = req
+        if let Some(id) = tenant_from_url(req
             .headers()
             .get(hyper::header::REFERER)
             .and_then(|v| v.to_str().ok())
+            .unwrap_or_default())
         {
-            for seg in referer.split('/') {
-                if let Some(raw) = seg.strip_prefix("tenant_") {
-                    if !raw.is_empty() {
-                        return raw.to_string();
-                    }
+            return id;
+        }
+        // WebSocket handshakes send NO Referer (only Origin, which carries
+        // no path), so root-path /ws can never resolve above. The proxy
+        // therefore plants a zw_tenant cookie on every proxied page load
+        // (see HttpHandler); browsers attach cookies to WS handshakes
+        // automatically. Last resort before "default".
+        if let Some(cookie) = req
+            .headers()
+            .get(hyper::header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+        {
+            for part in cookie.split(';') {
+                let part = part.trim();
+                if let Some(id) = part
+                    .strip_prefix("zw_tenant=")
+                    .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+                {
+                    return id.to_string();
                 }
             }
         }
@@ -73,4 +88,17 @@ impl Router {
             .emit();
         Ok(tenant_id)
     }
+}
+
+/// Extract a raw tenant id from any URL carrying a /tenant_<id>/ segment
+/// (Referer pages, public links). None when absent.
+fn tenant_from_url(url: &str) -> Option<String> {
+    for seg in url.split('/') {
+        if let Some(raw) = seg.strip_prefix("tenant_") {
+            if !raw.is_empty() {
+                return Some(raw.to_string());
+            }
+        }
+    }
+    None
 }

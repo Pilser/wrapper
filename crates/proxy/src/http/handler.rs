@@ -407,12 +407,21 @@ impl HttpHandler {
             .request(upstream_req)
             .await
             .map_err(|e| WrapperError::Proxy(format!("upstream {upstream_addr}: {e}")))?;
-        let (res_parts, res_body) = upstream_res.into_parts();
+        let (mut res_parts, res_body) = upstream_res.into_parts();
         let bytes: Bytes = res_body
             .collect()
             .await
             .map_err(|e| WrapperError::Proxy(format!("read upstream body: {e}")))?
             .to_bytes();
+        // Plant the tenant cookie so prefix-less follow-ups (absolute
+        // assets, and WebSocket handshakes which carry no Referer) resolve
+        // to this tenant. Browsers scope it to the proxy origin (Path=/).
+        // Routing hint only — session auth still uses Bearer tokens.
+        if tenant_id != "default" {
+            if let Ok(cookie) = format!("zw_tenant={tenant_id}; Path=/; SameSite=Lax").parse() {
+                res_parts.headers.insert(hyper::header::SET_COOKIE, cookie);
+            }
+        }
         Ok(hyper::Response::from_parts(res_parts, Full::new(bytes)))
     }
 }

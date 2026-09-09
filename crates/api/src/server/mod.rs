@@ -135,12 +135,18 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
                 let state = state.clone();
                 let handler = handler.clone();
                 async move {
-                    // Peek before moving: /api/* is served locally, every
-                    // other path goes to the tenant's zw (wake-on-request).
+                    // Peek before moving: the wrapper's OWN /api namespaces
+                    // are served locally; everything else — including zw's
+                    // own /api/* app routes (/api/sessions, ...) — goes to
+                    // the tenant's zw (wake-on-request). zw owns its paths;
+                    // the wrapper only owns auth/me/admin.
                     // Browsers (Cloudflare Pages frontend) need CORS: answer
                     // preflights and tag every /api response.
                     let path = req.uri().path().to_string();
-                    let is_api = path == "/api" || path.starts_with("/api/");
+                    let is_api = path == "/api"
+                        || path.starts_with("/api/auth")
+                        || path.starts_with("/api/me")
+                        || path.starts_with("/api/admin");
                     if is_api {
                         if req.method() == hyper::Method::OPTIONS {
                             return Ok::<_, anyhow::Error>(json::cors_preflight());
