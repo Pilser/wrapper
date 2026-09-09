@@ -74,6 +74,13 @@ impl FirecrackerClient {
     }
 
     /// Send `method` to `path` with optional JSON body; returns the body.
+    ///
+    /// Firecracker protocol notes (learned the hard way against FC 1.7):
+    /// * NEVER shutdown(Write): its micro_http server RSTs the connection
+    ///   on an early FIN instead of responding.
+    /// * NEVER read_to_end: success responses are `204` with
+    ///   `Connection: keep-alive` and no body, so EOF never comes. Read the
+    ///   headers, then exactly Content-Length body bytes (errors carry JSON).
     pub async fn request(
         &self,
         method: &str,
@@ -90,10 +97,7 @@ impl FirecrackerClient {
                 Ok(stream) => {
                     let (mut rx, mut tx) = stream.into_split();
                     tx.write_all(&raw).await?;
-                    tx.shutdown().await?;
-                    let mut buf = Vec::new();
-                    rx.read_to_end(&mut buf).await?;
-                    return decode_http_body(&buf);
+                    return read_fc_response(&mut rx).await;
                 }
                 Err(e) => {
                     last_err = e.to_string();
@@ -168,10 +172,65 @@ pub fn encode_http_request(method: &str, path: &str, body: Option<&Value>) -> Ve
     req
 }
 
-/// Extract the JSON body from a firecracker HTTP response.
-pub fn decode_http_body(buf: &[u8]) -> anyhow::Result<Value> {
-    let text = String::from_utf8_lossy(buf);
-    let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
+/// Read one firecracker HTTP response: headers first, then exactly
+/// Content-Length body bytes (error detail). Success (2xx) with empty body
+/// yields Null. The connection is dropped afterwards (no keep-alive reuse).
+async fn read_fc_response(
+    rx: &mut tokio::net::unix::OwnedReadHalf,
+) -> anyhow::Result<Value> {
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 1024];
+    // 1. Headers (cap 64KB against a pathological server).
+    loop {
+        let n = rx.read(&mut tmp).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > 65536 {
+            anyhow::bail!("firecracker response headers too large");
+        }
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let (head, mut body) = match text.split_once("\r\n\r\n") {
+        Some((h, b)) => (h.to_string(), b.as_bytes().to_vec()),
+        None => anyhow::bail!("malformed firecracker response"),
+    };
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("malformed firecracker status"))?;
+    // 2. Error bodies: read exactly Content-Length bytes for the detail.
+    let content_len: usize = head
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_once(':'))
+        .filter(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+        .filter_map(|(_, v)| v.trim().parse().ok())
+        .next()
+        .unwrap_or(0);
+    while body.len() < content_len {
+        let n = rx.read(&mut tmp).await?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&tmp[..n]);
+    }
+    if !(200..300).contains(&status) {
+        let detail = String::from_utf8_lossy(&body);
+        let detail = detail.trim();
+        anyhow::bail!("firecracker {status}: {detail}");
+    }
+    decode_json_body(&body)
+}
+
+/// Parse an already-framed response body (empty = Null).
+fn decode_json_body(buf: &[u8]) -> anyhow::Result<Value> {
+    let body = String::from_utf8_lossy(buf);
     let body = body.trim();
     if body.is_empty() {
         return Ok(Value::Null);
