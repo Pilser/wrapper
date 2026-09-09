@@ -158,8 +158,14 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
                     }))
                 }
             });
+            // with_upgrades() is REQUIRED for websocket tunneling: plain
+            // serve_connection closes the socket after a 101 response
+            // instead of hijacking it (the browser then sees EOF and zw
+            // sees a reset). The proxy handler takes the upgrade via
+            // hyper::upgrade::on() and pipes both directions.
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), svc)
+                .with_upgrades()
                 .await;
         });
     }
