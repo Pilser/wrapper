@@ -222,11 +222,14 @@ impl VmRuntime {
         let template = self.template_for_tenant(&tenant).await?;
 
         // Drop any stale row (dark VM, no snapshot) so the new assignment
-        // is the only record.
+        // is the only record. Also delete stale snapshots: they describe the
+        // dead VM (old IP/tenant state in RAM) and must never restore over
+        // this fresh boot.
         if let Ok(conn) = self.db.conn() {
             let _ = db::global::networks::release_all(&conn, tenant_id).await;
         }
         let _ = self.ip_pool.release(tenant_id).await;
+        let _ = self.delete_snapshots(tenant_id);
 
         // 3. Assign an IP from the pool.
         let ip = self
