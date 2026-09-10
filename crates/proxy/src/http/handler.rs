@@ -407,7 +407,7 @@ impl HttpHandler {
             .request(upstream_req)
             .await
             .map_err(|e| WrapperError::Proxy(format!("upstream {upstream_addr}: {e}")))?;
-        let (res_parts, res_body) = upstream_res.into_parts();
+        let (mut res_parts, res_body) = upstream_res.into_parts();
         let bytes: Bytes = res_body
             .collect()
             .await
@@ -418,6 +418,12 @@ impl HttpHandler {
             res_parts.headers.get(hyper::header::CONTENT_TYPE),
             tenant_id,
         );
+        // The rewrite changes body length: the forwarded Content-Length
+        // MUST be refreshed or browsers cut the page mid-tag (this exact
+        // bug truncated pages at the old length, killing all scripts).
+        if let Ok(len) = bytes.len().to_string().parse() {
+            res_parts.headers.insert(hyper::header::CONTENT_LENGTH, len);
+        }
         // NOTE: no tenant cookie is planted (a zw_tenant fallback existed
         // and was removed): third-party contexts reject it with console
         // noise, and the base-tag rewrite covers prefixed WS/asset URLs
