@@ -149,7 +149,10 @@ async fn enforce_category_grant(
 ) -> Result<()> {
     let grants = category_grants(db, tenant_id).await?;
     if !grants.is_empty() && !grants.iter().any(|g| g == op) {
-        return Err(Error::Unauthorized(format!(
+        // NOTE: InvalidInput, not Unauthorized — the supervisor proxy maps
+        // any "unauthorized"/"forbidden" text to a generic token error,
+        // which would hide which tool was denied and why.
+        return Err(Error::InvalidInput(format!(
             "tool {op} is not granted to this tenant category"
         )));
     }
