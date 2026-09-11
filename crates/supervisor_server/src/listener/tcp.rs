@@ -130,10 +130,11 @@ async fn handle_line(line: &str, state: &ListenerState) -> Envelope {
     {
         return envelope.respond("error", serde_json::json!({"error": e.to_string()}));
     }
-    // Heartbeats double as liveness: admin dashboard + idle math read this.
-    if envelope.msg_type == "heartbeat" {
-        state.activity.touch(&envelope.tenant_id);
-    }
+    // Any authenticated envelope proves the guest is alive: admin
+    // dashboard heartbeat age + idle math read this. (The guest's own
+    // heartbeat sender is still unwired; its 60s tools.granted poll and
+    // every tool call touch here instead.)
+    state.activity.touch(&envelope.tenant_id);
     match handler::dispatch(&envelope, &state.db, &state.telemetry).await {
         Ok(payload) => envelope.respond("response", payload),
         Err(e) => envelope.respond("error", serde_json::json!({"error": e.to_string()})),
