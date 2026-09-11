@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS staff (
     id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
     role TEXT NOT NULL, created_at TEXT NOT NULL);
+-- Per-category MCP tool grants for in-VM supervisor tools. No rows for a
+-- category = all tools allowed (backward compatible). Rows present = exactly
+-- these dotted op names (e.g. memory.save) are listed and callable.
+CREATE TABLE IF NOT EXISTS category_tools (
+    category_id TEXT NOT NULL, tool TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (category_id, tool));
 "#;
 
 pub async fn migrate(conn: &turso::Connection) -> anyhow::Result<()> {

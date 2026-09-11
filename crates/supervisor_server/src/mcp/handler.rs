@@ -31,6 +31,11 @@ pub async fn dispatch(
         "db_read" | "db_write" => {
             handle_proxy_op(envelope, db, telemetry).await
         }
+        // Asked by in-VM supervisors before tools/list: which dotted ops
+        // may this tenant list and call.
+        "tools.granted" | "tools_granted" => {
+            handle_tools_granted(envelope, db, telemetry).await
+        }
         "heartbeat" => {
             crate::heartbeat::receive::handle_heartbeat(
                 &envelope.tenant_id,
@@ -117,6 +122,56 @@ fn short_verb(dotted: &str) -> Option<&'static str> {
     })
 }
 
+/// Category gate: tenants whose category has explicit tool rows may only
+/// call those dotted ops. No rows = unrestricted (backward compatible).
+/// Returns the granted set (empty vec = unrestricted) for `tools.granted`.
+pub async fn category_grants(
+    db: &db::Db,
+    tenant_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let gconn = db
+        .global()
+        .conn()
+        .map_err(|e| Error::Database(e.to_string()))?;
+    let tenant = db::global::tenants::get_by_id(&gconn, tenant_id)
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?
+        .ok_or_else(|| Error::NotFound(format!("tenant {tenant_id}")))?;
+    db::global::category_tools::list(&gconn, &tenant.category_id)
+        .await
+        .map_err(|e| Error::Database(e.to_string()))
+}
+
+async fn enforce_category_grant(
+    db: &db::Db,
+    tenant_id: &str,
+    op: &str,
+) -> Result<()> {
+    let grants = category_grants(db, tenant_id).await?;
+    if !grants.is_empty() && !grants.iter().any(|g| g == op) {
+        return Err(Error::Unauthorized(format!(
+            "tool {op} is not granted to this tenant category"
+        )));
+    }
+    Ok(())
+}
+
+/// Answer `tools.granted` with `{tools, restricted}` for this tenant.
+/// `restricted=false` (no rows) means list everything; `restricted=true`
+/// means exactly `tools` (possibly empty = deny all).
+pub async fn handle_tools_granted(
+    envelope: &Envelope,
+    db: &db::Db,
+    telemetry: &Telemetry,
+) -> Result<Value> {
+    let _ = telemetry;
+    let grants = category_grants(db, &envelope.tenant_id).await?;
+    if grants.is_empty() {
+        return Ok(serde_json::json!({ "tools": super::tools::tool_names(), "restricted": false }));
+    }
+    Ok(serde_json::json!({ "tools": grants, "restricted": true }))
+}
+
 pub async fn handle_proxy_op(
     envelope: &Envelope,
     db: &db::Db,
@@ -136,6 +191,7 @@ pub async fn handle_proxy_op(
         .and_then(|v| v.as_str());
     super::permissions::check_tenant_match(&envelope.tenant_id, claimed)?;
     super::permissions::can_call(&envelope.tenant_id, op)?;
+    enforce_category_grant(db, &envelope.tenant_id, op).await?;
     // Hoist data.* up so family handlers read args flat or nested alike,
     // and set the short verb they match on.
     let mut payload = envelope.payload.clone();

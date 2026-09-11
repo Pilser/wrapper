@@ -710,6 +710,129 @@ pub async fn categories_delete(
     }
 }
 
+/// GET /api/admin/categories/{id}/tools -> {tools:[dotted ops], restricted:bool}.
+/// Empty tools + restricted=false means the category may list every tool.
+pub async fn categories_tools_get(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    // /api/admin/categories/{id}/tools -> {id} is second-to-last.
+    let id = json::second_last_seg(&req);
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    if db::global::categories::get_by_id(&conn, &id)
+        .await
+        .map(|c| c.is_none())
+        .unwrap_or(true)
+    {
+        return json::not_found("category not found");
+    }
+    match db::global::category_tools::list(&conn, &id).await {
+        Ok(tools) => json::ok(
+            serde_json::json!({"tools": tools, "restricted": !tools.is_empty()}),
+        ),
+        Err(_) => json::internal(),
+    }
+}
+
+/// PUT /api/admin/categories/{id}/tools {tools:[dotted ops]} -> {tools}.
+/// Replaces the grant set; [] (or missing) clears the restriction.
+/// Unknown op names are rejected.
+pub async fn categories_tools_set(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    // /api/admin/categories/{id}/tools -> {id} is second-to-last.
+    let id = json::second_last_seg(&req);
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let tools: Vec<String> = body
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    for t in &tools {
+        if !supervisor_server::mcp::tools::is_known_tool(t) {
+            return json::bad_request(format!("unknown tool {t}"));
+        }
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    if db::global::categories::get_by_id(&conn, &id)
+        .await
+        .map(|c| c.is_none())
+        .unwrap_or(true)
+    {
+        return json::not_found("category not found");
+    }
+    match db::global::category_tools::set_all(&conn, &id, &tools).await {
+        Ok(()) => json::ok(serde_json::json!({"tools": tools})),
+        Err(_) => json::internal(),
+    }
+}
+
+/// GET /api/admin/tools -> {tools:[{name, family, description}]}.
+/// Static catalog of every in-VM supervisor tool an admin may grant.
+pub async fn tools_catalog(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    json::ok(serde_json::json!({"tools": tool_catalog()}))
+}
+
+fn tool_catalog() -> Vec<serde_json::Value> {
+    const C: &[(&str, &str, &str)] = &[
+        ("memory", "memory.save", "Save a key/value memory"),
+        ("memory", "memory.get", "Read one memory by key"),
+        ("memory", "memory.list", "List memories, optional category"),
+        ("memory", "memory.search", "Full-text search memories"),
+        ("memory", "memory.delete", "Delete a memory by key"),
+        ("profile", "profile.get", "Read the tenant agent profile"),
+        ("profile", "profile.update", "Create/update the agent profile"),
+        ("history", "history.log", "Log an agent history entry"),
+        ("history", "history.get", "Read history entries"),
+        ("projects", "projects.create", "Create a project"),
+        ("projects", "projects.update", "Update a project"),
+        ("projects", "projects.list", "List projects"),
+        ("projects", "projects.get", "Read one project"),
+        ("skills", "skills.add", "Record a skill"),
+        ("skills", "skills.update", "Update a skill"),
+        ("skills", "skills.list", "List skills"),
+        ("skills", "skills.get", "Read one skill"),
+        ("reports", "reports.get", "Read a report"),
+        ("reports", "reports.list", "List reports"),
+        ("configs", "configs.get", "Read a config value"),
+        ("configs", "configs.set", "Write a config value"),
+        ("tenant", "tenant.get_tenant_info", "Read own tenant row"),
+        ("tenant", "tenant.get_category_info", "Read own category"),
+    ];
+    C.iter()
+        .map(|(family, name, description)| {
+            serde_json::json!({"family": family, "name": name, "description": description})
+        })
+        .collect()
+}
+
 // --------------------------------------------------------------------- fleet
 /// GET /api/admin/vms -> {vms:[{tenant_id,username,ip,tap,status}]}.
 pub async fn vms_list(

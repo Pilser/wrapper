@@ -252,6 +252,13 @@ async fn dispatch(
         ("DELETE", ["api", "admin", "categories", _]) => {
             admin::categories_delete(state, req).await
         }
+        ("GET", ["api", "admin", "categories", _, "tools"]) => {
+            admin::categories_tools_get(state, req).await
+        }
+        ("PUT", ["api", "admin", "categories", _, "tools"]) => {
+            admin::categories_tools_set(state, req).await
+        }
+        ("GET", ["api", "admin", "tools"]) => admin::tools_catalog(state, req).await,
         // ---- admin fleet ----
         ("GET", ["api", "admin", "vms"]) => admin::vms_list(state, req).await,
         ("POST", ["api", "admin", "vms", _, "shutdown"]) => {
