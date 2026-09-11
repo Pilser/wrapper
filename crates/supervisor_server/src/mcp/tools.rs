@@ -28,6 +28,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "tenant.info",
     "tenant.get_tenant_info",
     "tenant.get_category_info",
+    "tenant.category",
 ];
 
 pub fn tool_names() -> Vec<String> {
