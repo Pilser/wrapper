@@ -111,8 +111,8 @@ fn short_verb(dotted: &str) -> Option<&'static str> {
         "reports.list" => "list",
         "configs.get" => "get",
         "configs.set" => "set",
-        "tenant.get_tenant_info" => "info",
-        "tenant.get_category_info" => "category",
+        "tenant.get_tenant_info" | "tenant.info" => "info",
+        "tenant.get_category_info" | "tenant.category" => "category",
         _ => return None,
     })
 }

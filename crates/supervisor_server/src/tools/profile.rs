@@ -21,6 +21,16 @@ pub async fn handle_profile_call(
     let conn = tenant_db
         .conn()
         .map_err(|e| Error::Database(e.to_string()))?;
+    // Read a profile field: top-level (or data.*) first, then `updates.*`
+    // (the supervisor update_profile schema nests fields under `updates`).
+    let field = |key: &str| {
+        super::str_arg(payload, key).or_else(|| {
+            payload
+                .get("updates")
+                .and_then(|u| u.get(key))
+                .and_then(|v| v.as_str())
+        })
+    };
     let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("get");
     let result = match op {
         "update" | "set" | "upsert" => {
@@ -28,7 +38,7 @@ pub async fn handle_profile_call(
             let existing = db::tenant::profile::get(&conn, tenant_id)
                 .await
                 .map_err(|e| Error::Database(e.to_string()))?;
-            let agent_name = super::str_arg(payload, "agent_name")
+            let agent_name = field("agent_name")
                 .map(|s| s.to_string())
                 .or_else(|| existing.as_ref().map(|p| p.agent_name.clone()))
                 .filter(|s| !s.trim().is_empty())
@@ -38,14 +48,14 @@ pub async fn handle_profile_call(
             let profile = db::tenant::profile::Profile {
                 tenant_id: tenant_id.to_string(),
                 agent_name,
-                nickname: super::str_arg(payload, "nickname")
+                nickname: field("nickname")
                     .map(|s| s.to_string())
                     .or_else(|| existing.as_ref().and_then(|p| p.nickname.clone())),
-                language: super::str_arg(payload, "language")
+                language: field("language")
                     .map(|s| s.to_string())
                     .or_else(|| existing.as_ref().map(|p| p.language.clone()))
                     .unwrap_or_else(|| "en".to_string()),
-                timezone: super::str_arg(payload, "timezone")
+                timezone: field("timezone")
                     .map(|s| s.to_string())
                     .or_else(|| existing.as_ref().map(|p| p.timezone.clone()))
                     .unwrap_or_else(|| "UTC".to_string()),

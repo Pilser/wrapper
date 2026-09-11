@@ -44,9 +44,16 @@ pub async fn handle_history_call(
             serde_json::to_value(&row).map_err(Error::from)?
         }
         "get" => {
-            let id = super::str_arg(payload, "id").ok_or_else(|| {
-                Error::InvalidInput("history.get missing `id`".to_string())
-            })?;
+            // No id → list recent (supervisor get_history schema is id-optional).
+            if super::str_arg(payload, "id").is_none() {
+                let domain = super::str_arg(payload, "domain");
+                let limit = super::int_arg(payload, "limit").or(Some(100));
+                let rows = db::tenant::history::list(&conn, domain, limit)
+                    .await
+                    .map_err(|e| Error::Database(e.to_string()))?;
+                serde_json::to_value(&rows).map_err(Error::from)?
+            } else {
+                let id = super::str_arg(payload, "id").unwrap_or("");
             let mut rows = conn
                 .query(
                     "SELECT id, session_id, action, domain, summary, duration_seconds, created_at \
@@ -82,6 +89,7 @@ pub async fn handle_history_call(
                     serde_json::to_value(&entry).map_err(Error::from)?
                 }
                 None => Value::Null,
+            }
             }
         }
         _ => {
