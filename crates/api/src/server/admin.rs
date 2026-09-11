@@ -788,6 +788,220 @@ pub async fn categories_tools_set(
     }
 }
 
+/// GET /api/admin/logs?tenant=&level=&kind=&q=&since=&limit=
+/// Tail the host telemetry daily JSON files newest-first, filtered.
+/// `since` is an RFC3339 instant (or unix seconds); `limit` caps at 500.
+pub async fn logs_list(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let q = req.uri().query().unwrap_or("").to_string();
+    let params: std::collections::HashMap<&str, &str> = q
+        .split('&')
+        .filter_map(|pair| {
+            let mut it = pair.splitn(2, '=');
+            Some((it.next()?, it.next().unwrap_or("")))
+        })
+        .collect();
+    let tenant = params.get("tenant").map(|s| s.to_string()).unwrap_or_default();
+    let level = params.get("level").map(|s| s.to_string()).unwrap_or_default();
+    let kind = params.get("kind").map(|s| s.to_string()).unwrap_or_default();
+    let query = params.get("q").map(|s| s.to_string()).unwrap_or_default();
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200)
+        .clamp(1, 500);
+    let since_secs: Option<i64> = params.get("since").and_then(|v| {
+        v.parse::<i64>().ok().or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(v)
+                .ok()
+                .map(|d| d.timestamp())
+        })
+    });
+    let mut files: Vec<_> = std::fs::read_dir(&state.telemetry_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension().and_then(|e| e.to_str()) == Some("json")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files.reverse();
+    let mut out = Vec::new();
+    'files: for path in files {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let mut lines: Vec<&str> = text.lines().collect();
+        lines.reverse();
+        for line in lines {
+            if out.len() >= limit {
+                break 'files;
+            }
+            let v: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("");
+            if !tenant.is_empty()
+                && v.get("tenant_id").and_then(|x| x.as_str()).unwrap_or("")
+                    != tenant.as_str()
+                && !s("message").contains(tenant.as_str())
+            {
+                continue;
+            }
+            if !level.is_empty() && !s("level").eq_ignore_ascii_case(&level) {
+                continue;
+            }
+            if !kind.is_empty() && !(s("type").contains(&kind) || s("kind").contains(&kind)) {
+                continue;
+            }
+            if !query.is_empty() && !line.contains(&query) {
+                continue;
+            }
+            if let Some(since) = since_secs {
+                let ts = v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .and_then(|t| {
+                        chrono::DateTime::parse_from_rfc3339(t)
+                            .ok()
+                            .map(|d| d.timestamp())
+                    })
+                    .unwrap_or(0);
+                if ts < since {
+                    continue;
+                }
+            }
+            out.push(v);
+        }
+    }
+    json::ok(serde_json::json!({"logs": out}))
+}
+
+/// GET /api/admin/categories/{id}/configs -> {configs:[...]} (no blob bytes,
+/// content preview only).
+pub async fn category_configs_list(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let id = json::second_last_seg(&req);
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    match db::global::deployment_configs::list(&conn).await {
+        Ok(all) => {
+            let v: Vec<_> = all
+                .into_iter()
+                .filter(|d| d.category_id == id)
+                .map(|d| {
+                    serde_json::json!({
+                        "id": d.id, "category_id": d.category_id,
+                        "config_type": d.config_type, "name": d.name,
+                        "path": d.path,
+                        "content_preview": d.content
+                            .as_ref()
+                            .map(|b| String::from_utf8_lossy(&b[..b.len().min(500)]).to_string()),
+                        "checksum": d.checksum, "priority": d.priority,
+                        "created_at": d.created_at, "updated_at": d.updated_at,
+                    })
+                })
+                .collect();
+            json::ok(serde_json::json!({"configs": v}))
+        }
+        Err(_) => json::internal(),
+    }
+}
+
+/// POST /api/admin/categories/{id}/configs {config_type,name,path,content?,priority?}
+/// -> 201 {config} (content stored as UTF-8 bytes).
+pub async fn category_configs_create(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let id = json::second_last_seg(&req);
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let name = str_field(&body, "name").unwrap_or_default();
+    let path = str_field(&body, "path").unwrap_or_default();
+    if name.trim().is_empty() || path.trim().is_empty() {
+        return json::bad_request("name and path are required");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    if db::global::categories::get_by_id(&conn, &id)
+        .await
+        .map(|c| c.is_none())
+        .unwrap_or(true)
+    {
+        return json::not_found("category not found");
+    }
+    let now = shared::now_rfc3339();
+    let d = shared::DeploymentConfig {
+        id: uuid::Uuid::new_v4().to_string(),
+        category_id: id,
+        config_type: str_field(&body, "config_type").unwrap_or_else(|| "file".to_string()),
+        name,
+        path,
+        content: body
+            .get("content")
+            .and_then(|v| v.as_str())
+            .map(|s| s.as_bytes().to_vec()),
+        checksum: None,
+        priority: body
+            .get("priority")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    match db::global::deployment_configs::insert(&conn, &d).await {
+        Ok(()) => json::created(serde_json::json!({"config": {
+            "id": d.id, "category_id": d.category_id, "config_type": d.config_type,
+            "name": d.name, "path": d.path, "priority": d.priority,
+        }})),
+        Err(_) => json::internal(),
+    }
+}
+
+/// DELETE /api/admin/categories/{id}/configs/{config_id} -> {ok}.
+pub async fn category_configs_delete(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let id = json::last_seg(&req);
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    match db::global::deployment_configs::delete(&conn, &id).await {
+        Ok(()) => json::ok(serde_json::json!({"ok": true})),
+        Err(_) => json::internal(),
+    }
+}
+
 /// GET /api/admin/tools -> {tools:[{name, family, description}]}.
 /// Static catalog of every in-VM supervisor tool an admin may grant.
 pub async fn tools_catalog(

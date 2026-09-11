@@ -38,8 +38,9 @@ impl ServerConfig {
         telemetry: telemetry::Telemetry,
         db: db::Db,
         auth: auth::AuthService,
+        activity: proxy::ActivityMap,
     ) -> Result<()> {
-        listener::tcp::serve(&self.addr(), telemetry, db, auth).await
+        listener::tcp::serve(&self.addr(), telemetry, db, auth, activity).await
     }
 }
 

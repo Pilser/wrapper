@@ -12,6 +12,7 @@ shared = { path = "../shared" }
 telemetry = { path = "../telemetry" }
 db = { path = "../db" }
 auth = { path = "../auth" }
+proxy = { path = "../proxy" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

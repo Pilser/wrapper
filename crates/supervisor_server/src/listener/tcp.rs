@@ -15,6 +15,8 @@ pub struct ListenerState {
     pub telemetry: Telemetry,
     pub db: db::Db,
     pub auth: auth::AuthService,
+    /// Fed on every heartbeat envelope: drives admin liveness + idle math.
+    pub activity: proxy::ActivityMap,
 }
 
 /// Bind and serve JSON-over-TCP supervisor connections forever.
@@ -23,6 +25,7 @@ pub async fn serve(
     telemetry: Telemetry,
     db: db::Db,
     auth: auth::AuthService,
+    activity: proxy::ActivityMap,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     telemetry
@@ -36,6 +39,7 @@ pub async fn serve(
         telemetry,
         db,
         auth,
+        activity,
     });
     loop {
         let (socket, peer) = listener.accept().await?;
@@ -125,6 +129,10 @@ async fn handle_line(line: &str, state: &ListenerState) -> Envelope {
     .await
     {
         return envelope.respond("error", serde_json::json!({"error": e.to_string()}));
+    }
+    // Heartbeats double as liveness: admin dashboard + idle math read this.
+    if envelope.msg_type == "heartbeat" {
+        state.activity.touch(&envelope.tenant_id);
     }
     match handler::dispatch(&envelope, &state.db, &state.telemetry).await {
         Ok(payload) => envelope.respond("response", payload),

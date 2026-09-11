@@ -150,6 +150,9 @@ async fn async_main() -> anyhow::Result<()> {
             supervisor_api.addr()
         ))
         .emit();
+    // One activity map shared by the HTTP API and the supervisor listener:
+    // heartbeats feed the same liveness the dashboard and idle math read.
+    let activity = proxy::ActivityMap::new();
     {
         let srv_cfg = supervisor_api.config.clone();
         let srv_tel = telemetry.clone();
@@ -158,8 +161,9 @@ async fn async_main() -> anyhow::Result<()> {
             global: gdb.clone(),
         };
         let srv_auth = auth::AuthService::new(telemetry.clone());
+        let srv_activity = activity.clone();
         tokio::spawn(async move {
-            if let Err(e) = srv_cfg.start(srv_tel, srv_db, srv_auth).await {
+            if let Err(e) = srv_cfg.start(srv_tel, srv_db, srv_auth, srv_activity).await {
                 err_tel.builder()
                     .level(Level::Error)
                     .kind("supervisor.serve.failed")
@@ -279,9 +283,15 @@ async fn async_main() -> anyhow::Result<()> {
         .map(|p| p.join("snapshots").to_string_lossy().to_string())
         .unwrap_or_else(|| "data/snapshots".to_string());
     let _ = std::fs::create_dir_all(&snapshots_dir);
+    let telemetry_dir = std::path::Path::new(&cfg.telemetry.disk.path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| cfg.telemetry.disk.path.clone());
     let serve_params = api::server::ServeParams {
         gdb: gdb.clone(),
         telemetry: telemetry.clone(),
+        activity: activity.clone(),
+        telemetry_dir,
         firecracker_bin: cfg.firecracker.binary_path.clone(),
         net_cfg: net_cfg.clone(),
         kernel_path: cfg.firecracker.kernel_path.clone(),

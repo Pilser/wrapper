@@ -14,6 +14,7 @@ pub mod admin;
 pub mod auth_ctx;
 pub mod idle;
 pub mod json;
+pub mod stream;
 pub mod user;
 
 use bytes::Bytes;
@@ -35,12 +36,16 @@ pub struct AppState {
     pub activity: ActivityMap,
     /// Public base URL for minting serverless links (config `[api]`).
     pub public_base: String,
+    /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
+    pub telemetry_dir: String,
     /// Host directory scanned by GET /api/admin/disks (guest images).
     pub disks_dir: String,
     /// Host directory for per-tenant snapshots (<dir>/<tenant>/{vmstate,mem}).
     pub snapshots_dir: String,
     /// Idle minutes before auto-sleep (config `[vm]`, 0 = disabled).
     pub idle_timeout_minutes: u64,
+    /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
+    pub telemetry_dir: String,
 }
 
 impl AppState {
@@ -58,6 +63,8 @@ impl AppState {
 pub struct ServeParams {
     pub gdb: db::global::GlobalDb,
     pub telemetry: Telemetry,
+    /// Shared with the supervisor TCP listener: heartbeats feed the same map.
+    pub activity: ActivityMap,
     pub firecracker_bin: String,
     pub net_cfg: shared::NetworkConfig,
     pub kernel_path: String,
@@ -81,7 +88,7 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         expand_home(&p.initrd_path),
     )?
     .with_snapshots_dir(p.snapshots_dir.clone());
-    let activity = ActivityMap::new();
+    let activity = p.activity.clone();
     // Restart recovery BEFORE the runtime moves into handler/state: never
     // re-allocate an address a live VM still holds.
     match runtime.premark_reserved().await {
@@ -265,6 +272,21 @@ async fn dispatch(
             admin::vms_shutdown(state, req).await
         }
         ("GET", ["api", "admin", "disks"]) => admin::disks_list(state, req).await,
+        ("GET", ["api", "admin", "logs"]) => admin::logs_list(state, req).await,
+        ("GET", ["api", "admin", "stream"]) => match stream::admin_stream(state, req).await {
+            Ok(r) => r,
+            Err(_) => admin::internal_server_error(),
+        },
+        ("GET", ["api", "admin", "logs"]) => admin::logs_list(state, req).await,
+        ("GET", ["api", "admin", "categories", _, "configs"]) => {
+            admin::category_configs_list(state, req).await
+        }
+        ("POST", ["api", "admin", "categories", _, "configs"]) => {
+            admin::category_configs_create(state, req).await
+        }
+        ("DELETE", ["api", "admin", "categories", _, "configs", _]) => {
+            admin::category_configs_delete(state, req).await
+        }
         _ => json::not_found("unknown api route"),
     }
 }
