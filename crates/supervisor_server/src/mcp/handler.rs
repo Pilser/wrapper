@@ -128,7 +128,7 @@ fn short_verb(dotted: &str) -> Option<&'static str> {
 pub async fn category_grants(
     db: &db::Db,
     tenant_id: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> Result<Vec<String>> {
     let gconn = db
         .global()
         .conn()
