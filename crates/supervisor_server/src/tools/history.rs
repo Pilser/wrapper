@@ -23,7 +23,7 @@ pub async fn handle_history_call(
         .map_err(|e| Error::Database(e.to_string()))?;
     let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("list");
     let result = match op {
-        "append" | "insert" | "add" => {
+        "append" | "insert" | "add" | "log" => {
             let action = super::str_arg(payload, "action").ok_or_else(|| {
                 Error::InvalidInput("history.append missing `action`".to_string())
             })?;

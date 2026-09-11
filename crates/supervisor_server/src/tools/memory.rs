@@ -23,6 +23,45 @@ pub async fn handle_memory_call(
         .map_err(|e| Error::Database(e.to_string()))?;
     let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("list");
     let result = match op {
+        "save" => {
+            let key = super::str_arg(payload, "key").unwrap_or("").trim();
+            if key.is_empty() {
+                return Err(Error::InvalidInput("memory.save missing `key`".to_string()));
+            }
+            let now = shared::now_rfc3339();
+            let row = db::tenant::memory::MemoryRow {
+                id: uuid::Uuid::new_v4().to_string(),
+                key: key.to_string(),
+                value: super::str_arg(payload, "value").unwrap_or("").to_string(),
+                category: super::str_arg(payload, "category").unwrap_or("").to_string(),
+                importance: super::float_arg(payload, "importance").unwrap_or(0.0),
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            db::tenant::memory::insert(&conn, &row)
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            serde_json::to_value(&row).map_err(Error::from)?
+        }
+        "search" => {
+            let q = super::str_arg(payload, "query")
+                .or_else(|| super::str_arg(payload, "q"))
+                .unwrap_or("");
+            let rows = db::tenant::memory::search(&conn, q)
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            serde_json::to_value(&rows).map_err(Error::from)?
+        }
+        "delete" => {
+            let key = super::str_arg(payload, "key").unwrap_or("").trim();
+            if key.is_empty() {
+                return Err(Error::InvalidInput("memory.delete missing `key`".to_string()));
+            }
+            db::tenant::memory::delete(&conn, key)
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            serde_json::json!({"ok": true, "deleted": key})
+        }
         "get" => {
             let key = payload.get("key").and_then(|v| v.as_str()).unwrap_or("");
             if key.is_empty() {

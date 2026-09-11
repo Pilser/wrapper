@@ -5,7 +5,7 @@ use telemetry::{Level, Telemetry};
 /// Handle `tenant.info` calls (global `tenants` row + tenant DB handle).
 pub async fn handle_tenant_call(
     tenant_id: &str,
-    _payload: &Value,
+    payload: &Value,
     db: &db::Db,
     telemetry: &Telemetry,
 ) -> Result<Value> {
@@ -25,14 +25,35 @@ pub async fn handle_tenant_call(
     let gconn = global
         .conn()
         .map_err(|e| Error::Database(e.to_string()))?;
-    let result = match db::global::tenants::get_by_id(&gconn, tenant_id)
-        .await
-        .map_err(|e| Error::Database(e.to_string()))?
-    {
-        Some(row) => serde_json::to_value(&row).map_err(Error::from)?,
-        None => {
-            return Err(Error::NotFound(format!("tenant {tenant_id}")));
+    let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("info");
+    let result = match op {
+        "category" => {
+            let tenant = db::global::tenants::get_by_id(&gconn, tenant_id)
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?
+                .ok_or_else(|| Error::NotFound(format!("tenant {tenant_id}")))?;
+            match db::global::categories::get_by_id(&gconn, &tenant.category_id)
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?
+            {
+                Some(cat) => serde_json::to_value(&cat).map_err(Error::from)?,
+                None => {
+                    return Err(Error::NotFound(format!(
+                        "category {}",
+                        tenant.category_id
+                    )));
+                }
+            }
         }
+        _ => match db::global::tenants::get_by_id(&gconn, tenant_id)
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?
+        {
+            Some(row) => serde_json::to_value(&row).map_err(Error::from)?,
+            None => {
+                return Err(Error::NotFound(format!("tenant {tenant_id}")));
+            }
+        },
     };
     telemetry
         .builder()

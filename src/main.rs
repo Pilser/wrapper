@@ -131,7 +131,7 @@ async fn async_main() -> anyhow::Result<()> {
         .emit();
 
     // 9. supervisor_server::start() → listen for supervisor connections.
-    // MUST come before proxy::start (step 11).
+    // Serves db_read/db_write envelopes for in-VM supervisor MCP tools.
     let supervisor_config = api::supervisor::ServerConfig {
         bind_address: cfg.supervisor_server.bind_address.clone(),
         port: cfg.supervisor_server.port,
@@ -146,10 +146,29 @@ async fn async_main() -> anyhow::Result<()> {
         .category("supervisor_server")
         .source("wrapper::main")
         .message(format!(
-            "supervisor listener configured at {} (serve via ServerConfig::start once db/auth wired)",
+            "supervisor listener configured at {}",
             supervisor_api.addr()
         ))
         .emit();
+    {
+        let srv_cfg = supervisor_api.config.clone();
+        let srv_tel = telemetry.clone();
+        let err_tel = telemetry.clone();
+        let srv_db = db::Db {
+            global: gdb.clone(),
+        };
+        let srv_auth = auth::AuthService::new(telemetry.clone());
+        tokio::spawn(async move {
+            if let Err(e) = srv_cfg.start(srv_tel, srv_db, srv_auth).await {
+                err_tel.builder()
+                    .level(Level::Error)
+                    .kind("supervisor.serve.failed")
+                    .category("supervisor_server")
+                    .message(format!("supervisor listener exited: {e}"))
+                    .emit();
+            }
+        });
+    }
 
     // 10. auth::init() → load auth config.
     let auth_api = api::auth::AuthApi::new(telemetry.clone());

@@ -23,6 +23,58 @@ pub async fn handle_skills_call(
         .map_err(|e| Error::Database(e.to_string()))?;
     let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("list");
     let result = match op {
+        "update" => {
+            // Read-modify-write: only provided fields change.
+            let id = super::str_arg(payload, "id").ok_or_else(|| {
+                Error::InvalidInput("skills.update missing `id`".to_string())
+            })?;
+            let mut rows = conn
+                .query("SELECT id, name, domain, level, confidence, last_practiced, created_at FROM skills WHERE id = ?1", [id])
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            let cur = rows
+                .next()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?
+                .ok_or_else(|| Error::NotFound(format!("skill {id}")))?;
+            drop(rows);
+            let text = |i: usize| {
+                cur.get_value(i)
+                    .ok()
+                    .and_then(|v| v.as_text().cloned())
+                    .unwrap_or_default()
+            };
+            let num = |i: usize| {
+                cur.get_value(i)
+                    .ok()
+                    .and_then(|v| {
+                        v.as_real()
+                            .copied()
+                            .or_else(|| v.as_integer().copied().map(|n| n as f64))
+                    })
+                    .unwrap_or(0.0)
+            };
+            let upd = |key: &str, cur_v: String| {
+                super::str_arg(payload, key)
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(cur_v)
+            };
+            conn.execute(
+                "UPDATE skills SET name = ?1, domain = ?2, level = ?3, confidence = ?4, last_practiced = ?5 WHERE id = ?6",
+                (
+                    upd("name", text(1)).as_str(),
+                    upd("domain", text(2)).as_str(),
+                    upd("level", text(3)).as_str(),
+                    super::float_arg(payload, "confidence").unwrap_or_else(|| num(4)),
+                    upd("last_practiced", text(5)).as_str(),
+                    id,
+                ),
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+            serde_json::json!({"ok": true, "updated": id})
+        }
         "create" | "insert" | "add" => {
             let name = super::str_arg(payload, "name").ok_or_else(|| {
                 Error::InvalidInput("skills.create missing `name`".to_string())

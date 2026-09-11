@@ -23,6 +23,48 @@ pub async fn handle_projects_call(
         .map_err(|e| Error::Database(e.to_string()))?;
     let op = payload.get("op").and_then(|v| v.as_str()).unwrap_or("list");
     let result = match op {
+        "update" => {
+            let id = super::str_arg(payload, "id").ok_or_else(|| {
+                Error::InvalidInput("projects.update missing `id`".to_string())
+            })?;
+            let mut rows = conn
+                .query("SELECT id, name, domain, status, description, created_at, updated_at FROM projects WHERE id = ?1", [id])
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            let cur = rows
+                .next()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?
+                .ok_or_else(|| Error::NotFound(format!("project {id}")))?;
+            drop(rows);
+            let text = |i: usize| {
+                cur.get_value(i)
+                    .ok()
+                    .and_then(|v| v.as_text().cloned())
+                    .unwrap_or_default()
+            };
+            let upd = |key: &str, cur_v: String| {
+                super::str_arg(payload, key)
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(cur_v)
+            };
+            let now = shared::now_rfc3339();
+            conn.execute(
+                "UPDATE projects SET name = ?1, domain = ?2, status = ?3, description = ?4, updated_at = ?5 WHERE id = ?6",
+                (
+                    upd("name", text(1)).as_str(),
+                    upd("domain", text(2)).as_str(),
+                    upd("status", text(3)).as_str(),
+                    upd("description", text(4)).as_str(),
+                    now.as_str(),
+                    id,
+                ),
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+            serde_json::json!({"ok": true, "updated": id})
+        }
         "create" | "insert" | "add" => {
             let name = super::str_arg(payload, "name").ok_or_else(|| {
                 Error::InvalidInput("projects.create missing `name`".to_string())

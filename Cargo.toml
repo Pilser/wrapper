@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 api = { path = "crates/api" }
+auth = { path = "crates/auth" }
+db = { path = "crates/db" }
 shared = { path = "crates/shared" }
+supervisor_server = { path = "crates/supervisor_server" }
 telemetry = { path = "crates/telemetry" }
 turso = { workspace = true }
 tokio = { workspace = true }
