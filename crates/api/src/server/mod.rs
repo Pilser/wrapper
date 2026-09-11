@@ -118,6 +118,7 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         idle_timeout_minutes: p.idle_timeout_minutes,
         disks_dir: p.disks_dir,
         snapshots_dir: p.snapshots_dir,
+        telemetry_dir: p.telemetry_dir,
     };
     if p.idle_timeout_minutes > 0 {
         idle::spawn_reaper(
@@ -272,7 +273,6 @@ async fn dispatch(
             admin::vms_shutdown(state, req).await
         }
         ("GET", ["api", "admin", "disks"]) => admin::disks_list(state, req).await,
-        ("GET", ["api", "admin", "logs"]) => admin::logs_list(state, req).await,
         ("GET", ["api", "admin", "stream"]) => match stream::admin_stream(state, req).await {
             Ok(r) => r,
             Err(_) => json::internal(),
