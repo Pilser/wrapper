@@ -44,8 +44,6 @@ pub struct AppState {
     pub snapshots_dir: String,
     /// Idle minutes before auto-sleep (config `[vm]`, 0 = disabled).
     pub idle_timeout_minutes: u64,
-    /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
-    pub telemetry_dir: String,
 }
 
 impl AppState {
@@ -73,6 +71,8 @@ pub struct ServeParams {
     pub disks_dir: String,
     pub snapshots_dir: String,
     pub idle_timeout_minutes: u64,
+    /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
+    pub telemetry_dir: String,
 }
 
 /// Serve forever: one hyper listener, `/api/*` routed locally, everything
@@ -275,7 +275,7 @@ async fn dispatch(
         ("GET", ["api", "admin", "logs"]) => admin::logs_list(state, req).await,
         ("GET", ["api", "admin", "stream"]) => match stream::admin_stream(state, req).await {
             Ok(r) => r,
-            Err(_) => admin::internal_server_error(),
+            Err(_) => json::internal(),
         },
         ("GET", ["api", "admin", "logs"]) => admin::logs_list(state, req).await,
         ("GET", ["api", "admin", "categories", _, "configs"]) => {
