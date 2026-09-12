@@ -186,6 +186,33 @@ impl VmRuntime {
             .ok()
     }
 
+    /// Filesystem size (bytes) of an ext4 image via `dumpe2fs -h`
+    /// (Block count x Block size). None when unreadable — callers fall back
+    /// to the file size.
+    async fn fs_size_bytes(path: &std::path::Path) -> Option<u64> {
+        let out = tokio::process::Command::new("dumpe2fs")
+            .args(["-h"])
+            .arg(path)
+            .output()
+            .await
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut blocks: Option<u64> = None;
+        let mut bsize: Option<u64> = None;
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("Block count:") {
+                blocks = v.trim().parse().ok();
+            } else if let Some(v) = line.strip_prefix("Block size:") {
+                bsize = v.trim().parse().ok();
+            }
+        }
+        Some(blocks? * bsize?)
+    }
+
     /// Kill a tenant's Firecracker process and remove its (now stale) API
     /// socket file, so an offline disk operation can proceed and the next
     /// spawn binds cleanly. Guest RAM state is discarded; disk data is
@@ -227,19 +254,27 @@ impl VmRuntime {
         if fc_socket_path(tenant_id).exists() {
             anyhow::bail!("vm must be shut down before resize (socket present)");
         }
-        let cur = std::fs::metadata(&path)?.len();
+        let cur_file = std::fs::metadata(&path)?.len();
+        // Filesystem size (blocks) can LAG the file size when an earlier
+        // attempt grew the file but failed before resize2fs: compare the
+        // request against the fs, and skip truncate when the file is
+        // already big enough (makes retry repair instead of refuse).
+        let cur_fs = Self::fs_size_bytes(&path).await.unwrap_or(cur_file);
         let want = size_gb * 1024 * 1024 * 1024;
-        if want <= cur {
-            anyhow::bail!("grow-only: {size_gb}GiB is not larger than current");
+        if want <= cur_fs {
+            anyhow::bail!("grow-only: {size_gb}GiB is not larger than current filesystem");
         }
-        // 1. Grow the file (append-only; existing bytes untouched).
-        let st = tokio::process::Command::new("truncate")
-            .args(["-s", &format!("{want}")])
-            .arg(&path)
-            .status()
-            .await?;
-        if !st.success() {
-            anyhow::bail!("truncate data disk failed");
+        // 1. Grow the file when needed (append-only; existing bytes
+        //    untouched). Skipped when a previous attempt already grew it.
+        if want > cur_file {
+            let st = tokio::process::Command::new("truncate")
+                .args(["-s", &format!("{want}")])
+                .arg(&path)
+                .status()
+                .await?;
+            if !st.success() {
+                anyhow::bail!("truncate data disk failed");
+            }
         }
         // 2. Filesystem check (replays the journal from the kill; must be
         //    clean before resize). e2fsck -p exits 0 (clean) or 1 (errors
