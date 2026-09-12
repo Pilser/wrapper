@@ -126,17 +126,13 @@ pub async fn admin_events(
             }
         }
     }
+    let query = parts.uri.query().unwrap_or("").to_string();
     let param = |key: &str| {
-        parts
-            .uri
-            .query()
-            .unwrap_or("")
-            .split('&')
-            .find_map(|pair| {
-                let mut it = pair.splitn(2, '=');
-                (it.next() == Some(key)).then(|| it.next().unwrap_or("").to_string())
-            })
-            .unwrap_or_default()
+        query.split('&').find_map(|pair| {
+            let mut it = pair.splitn(2, '=');
+            (it.next() == Some(key)).then(|| it.next().unwrap_or("").to_string())
+        })
+        .unwrap_or_default()
     };
     let req = hyper::Request::from_parts(parts, body);
     if crate::server::auth_ctx::require_admin(state, &req).await.is_err() {
