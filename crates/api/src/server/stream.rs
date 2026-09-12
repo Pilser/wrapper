@@ -196,17 +196,13 @@ pub async fn admin_events(
         filter.events.push(k.to_string());
     }
     let state = state.clone();
-    // Same ordering as admin_stream: await the upgrade before answering.
-    let upgraded = match hyper::upgrade::on(req).await {
-        Ok(u) => u,
-        Err(_) => {
-            return Ok(plain(
-                hyper::StatusCode::BAD_REQUEST,
-                "websocket upgrade failed",
-            ))
-        }
-    };
+    // See admin_stream: the upgrade future only resolves after the 101 is
+    // answered, so it must be awaited inside the spawned task, not here.
     tokio::spawn(async move {
+        let upgraded = match hyper::upgrade::on(req).await {
+            Ok(u) => u,
+            Err(_) => return,
+        };
         let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
             hyper_util::rt::TokioIo::new(upgraded),
             tokio_tungstenite::tungstenite::protocol::Role::Server,
@@ -291,6 +287,9 @@ pub async fn admin_stream(
         ));
     }
     // Browsers validate the accept key, so derive it before moving req.
+    // NOTE: the upgrade future is awaited INSIDE the spawned task, AFTER
+    // this function returns the 101: hyper only completes hyper::upgrade::on
+    // once the service answers, so awaiting it here deadlocks the handshake.
     let ws_key = req
         .headers()
         .get("sec-websocket-key")
@@ -312,20 +311,12 @@ pub async fn admin_stream(
     let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(
         ws_key.as_bytes(),
     );
-    // Await the upgrade BEFORE answering 101: responding first lets hyper
-    // finish (and close) the connection before the spawned task registers
-    // the upgrade future — browsers report it as "interrupted".
-    let upgraded = match hyper::upgrade::on(req).await {
-        Ok(u) => u,
-        Err(_) => {
-            return Ok(plain(
-                hyper::StatusCode::BAD_REQUEST,
-                "websocket upgrade failed",
-            ))
-        }
-    };
     let state = state.clone();
     tokio::spawn(async move {
+        let upgraded = match hyper::upgrade::on(req).await {
+            Ok(u) => u,
+            Err(_) => return,
+        };
         let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
             hyper_util::rt::TokioIo::new(upgraded),
             tokio_tungstenite::tungstenite::protocol::Role::Server,
