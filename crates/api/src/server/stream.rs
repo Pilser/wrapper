@@ -80,8 +80,14 @@ pub async fn snapshot(state: &AppState, tenant_id: &str) -> serde_json::Value {
     // Live memory pressure from the balloon device (if the guest kernel
     // has virtio_balloon; else null and the UI shows allocated memory).
     let balloon = balloon_stats(tenant_id).await;
+    // Data-disk size (pure stat, no fork — null when no image exists yet).
+    let disk_bytes: Option<u64> = match &state.runtime {
+        Some(r) => r.disk_size_bytes(tenant_id),
+        None => None,
+    };
     serde_json::json!({
         "tenant": tenant_id,
+        "disk": disk_bytes.map(|b| serde_json::json!({"size_bytes": b})),
         "vm": {
             "status": tenant.as_ref().map(|t| t.status.as_str()),
             "ip": ip, "tap": tap,

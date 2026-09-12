@@ -1138,6 +1138,101 @@ pub async fn vms_shutdown(
     }
 }
 
+// ------------------------------------------------------- tenant data disk
+/// GET /api/admin/tenants/{id}/disk -> {exists,size_bytes,size_gb,used_bytes}:
+/// the tenant's persistent data-disk image (`<disks>/<tenant>.img`).
+/// `used_bytes` is sparse-aware host usage (null when unknown).
+pub async fn tenant_disk_show(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let tenant_id = json::second_last_seg(&req);
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    let size = runtime.disk_size_bytes(&tenant_id);
+    let used = runtime.disk_used_bytes(&tenant_id).await;
+    json::ok(serde_json::json!({
+        "tenant_id": tenant_id,
+        "exists": size.is_some(),
+        "size_bytes": size,
+        "size_gb": size.map(|b| (b as f64) / 1024.0 / 1024.0 / 1024.0),
+        "used_bytes": used,
+    }))
+}
+
+/// POST /api/admin/tenants/{id}/disk/resize {size_gb} -> grow offline.
+///
+/// Grow-only, capped at 64 GiB. The VM is killed first when live (offline
+/// resize is the only corruption-safe kind: a live guest caches filesystem
+/// metadata). Disk bytes are never at risk (`truncate` appends, `e2fsck`
+/// then `resize2fs`); in-flight RAM state is not preserved — same as any
+/// reboot. Sleep snapshots are invalidated by the geometry change, so a
+/// re-wake fresh-boots (disk data intact). Re-wakes automatically when the
+/// VM was live; otherwise it stays asleep until next use.
+pub async fn tenant_disk_resize(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let tenant_id = json::second_last_seg(&req);
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let size_gb = match body.get("size_gb").and_then(|v| v.as_u64()) {
+        Some(n) => n,
+        None => return json::bad_request("size_gb required (integer GiB, grow-only)"),
+    };
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    let was_live = vm::runtime::fc_socket_path(&tenant_id).exists();
+    if was_live {
+        runtime.kill_vm_process(&tenant_id).await;
+    }
+    match runtime.resize_data_disk(&tenant_id, size_gb).await {
+        Ok(now_bytes) => {
+            let ip = if was_live {
+                state.activity.touch(&tenant_id);
+                runtime
+                    .ensure_running(&tenant_id)
+                    .await
+                    .ok()
+                    .and_then(|a| a.split(':').next().map(str::to_string))
+            } else {
+                None
+            };
+            json::ok(serde_json::json!({
+                "tenant_id": tenant_id,
+                "size_gb": size_gb,
+                "size_bytes": now_bytes,
+                "re_waked": ip.is_some(),
+                "ip": ip,
+            }))
+        }
+        Err(e) => {
+            // Restore service when we took it down: best-effort re-wake so
+            // a failed resize never strands a tenant dark.
+            if was_live {
+                state.activity.touch(&tenant_id);
+                let _ = runtime.ensure_running(&tenant_id).await;
+            }
+            json::json(
+                hyper::StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": "disk resize failed", "detail": e.to_string()}),
+            )
+        }
+    }
+}
+
 // --------------------------------------------------------------------- disks
 /// GET /api/admin/disks -> {disks:[{name,path,size_bytes}]}: guest images
 /// (kernels, initramfs) present on the host. Admin picks these paths when

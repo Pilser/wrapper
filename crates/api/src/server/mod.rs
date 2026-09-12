@@ -279,6 +279,12 @@ async fn dispatch(
             admin::vms_shutdown(state, req).await
         }
         ("GET", ["api", "admin", "disks"]) => admin::disks_list(state, req).await,
+        ("GET", ["api", "admin", "tenants", _, "disk"]) => {
+            admin::tenant_disk_show(state, req).await
+        }
+        ("POST", ["api", "admin", "tenants", _, "disk", "resize"]) => {
+            admin::tenant_disk_resize(state, req).await
+        }
         ("GET", ["api", "admin", "dashboard"]) => {
             admin::dashboard_snapshot(state, req).await
         }

@@ -38,6 +38,9 @@ const DEFAULT_VCPU: u32 = 2;
 /// blocks). Raised per tenant later via the admin resize action.
 pub const DEFAULT_DATA_DISK_GB: u64 = 2;
 
+/// Hard cap for data-disk resizes (GiB). Grow-only; shrinking is refused.
+pub const MAX_DATA_DISK_GB: u64 = 64;
+
 #[derive(Clone)]
 pub struct VmRuntime {
     vm_manager: VmManager,
@@ -150,6 +153,126 @@ impl VmRuntime {
             std::fs::remove_dir_all(&dir)?;
         }
         Ok(())
+    }
+
+    /// Apparent size (bytes) of a tenant's data-disk image. None when the
+    /// image does not exist (pure `stat`, no fork — safe on hot paths).
+    pub fn disk_size_bytes(&self, tenant_id: &str) -> Option<u64> {
+        let path = self.data_disk_path(tenant_id).ok()?;
+        std::fs::metadata(&path).ok().map(|m| m.len())
+    }
+
+    /// Real host blocks consumed by the image (sparse-aware: a 2 GiB image
+    /// holding 200 MiB reports ~200 MiB). Best-effort: None when `du` is
+    /// missing or fails. Keep off hot paths (forks a process).
+    pub async fn disk_used_bytes(&self, tenant_id: &str) -> Option<u64> {
+        let path = self.data_disk_path(tenant_id).ok()?;
+        if !path.exists() {
+            return None;
+        }
+        let out = tokio::process::Command::new("du")
+            .args(["-B1"])
+            .arg(&path)
+            .output()
+            .await
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    /// Kill a tenant's Firecracker process and remove its (now stale) API
+    /// socket file, so an offline disk operation can proceed and the next
+    /// spawn binds cleanly. Guest RAM state is discarded; disk data is
+    /// untouched (ext4 journal replays on next mount).
+    pub async fn kill_vm_process(&self, tenant_id: &str) {
+        let pattern = format!("/tmp/fc_{tenant_id}.sock");
+        let _ = tokio::process::Command::new("pkill")
+            .args(["-f", &pattern])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = std::fs::remove_file(format!("/tmp/fc_{tenant_id}.sock"));
+    }
+
+    /// Grow a tenant's data disk to `size_gb` GiB without touching existing
+    /// data: `truncate` only appends zero blocks, then `resize2fs` grows the
+    /// filesystem into them. Grow-only (`size_gb` must exceed current size,
+    /// capped at `MAX_DATA_DISK_GB`).
+    ///
+    /// SAFETY: the VM must be DOWN (no FC socket). A live guest holds cached
+    /// filesystem metadata; growing under it corrupts. The admin handler
+    /// kills the VM first. Sleep snapshots are deleted: they describe the
+    /// old geometry and must never restore over the resized disk (the next
+    /// wake is a fresh boot — disk data intact, RAM state not).
+    pub async fn resize_data_disk(
+        &self,
+        tenant_id: &str,
+        size_gb: u64,
+    ) -> anyhow::Result<u64> {
+        if size_gb == 0 || size_gb > MAX_DATA_DISK_GB {
+            anyhow::bail!("size_gb must be 1..={MAX_DATA_DISK_GB}");
+        }
+        let path = self.data_disk_path(tenant_id)?;
+        if !path.exists() {
+            anyhow::bail!("no data disk for tenant (never booted with disk support?)");
+        }
+        if fc_socket_path(tenant_id).exists() {
+            anyhow::bail!("vm must be shut down before resize (socket present)");
+        }
+        let cur = std::fs::metadata(&path)?.len();
+        let want = size_gb * 1024 * 1024 * 1024;
+        if want <= cur {
+            anyhow::bail!("grow-only: {size_gb}GiB is not larger than current");
+        }
+        // 1. Grow the file (append-only; existing bytes untouched).
+        let st = tokio::process::Command::new("truncate")
+            .args(["-s", &format!("{want}")])
+            .arg(&path)
+            .status()
+            .await?;
+        if !st.success() {
+            anyhow::bail!("truncate data disk failed");
+        }
+        // 2. Filesystem check (replays the journal from the kill; must be
+        //    clean before resize). Failure here leaves a valid fs at the
+        //    OLD size — data safe, resize aborted.
+        let ck = tokio::process::Command::new("e2fsck")
+            .args(["-p", "-f"])
+            .arg(&path)
+            .status()
+            .await?;
+        if !ck.success() {
+            anyhow::bail!("e2fsck data disk failed (image left at old size, data intact)");
+        }
+        // 3. Grow the filesystem into the new space.
+        let rs = tokio::process::Command::new("resize2fs")
+            .arg(&path)
+            .status()
+            .await?;
+        if !rs.success() {
+            anyhow::bail!("resize2fs failed (file grown, fs at old size — retry or investigate)");
+        }
+        // 4. Old-geometry snapshots must never restore over the new disk.
+        let _ = self.delete_snapshots(tenant_id);
+        let now = std::fs::metadata(&path)?.len();
+        self.telemetry
+            .builder()
+            .level(telemetry::Level::Info)
+            .kind("vm.disk.resized")
+            .category("vm")
+            .tenant_id(Some(tenant_id.to_string()))
+            .data("size_bytes", now.to_string())
+            .message(format!("data disk resized to {size_gb}GiB for tenant {tenant_id}"))
+            .emit();
+        Ok(now)
     }
 
     /// Ensure the tenant's VM is running; return its `IP:port`.
