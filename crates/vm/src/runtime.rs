@@ -213,11 +213,51 @@ impl VmRuntime {
         Some(blocks? * bsize?)
     }
 
+    /// Flush the guest's page cache over SSH (`sync`) so a subsequent kill
+    /// lands on a quiescent filesystem. Best-effort with a short timeout:
+    /// failure falls back to kill-only (journal replay), never blocks.
+    pub async fn sync_guest_disk(&self, tenant_id: &str) {
+        let ip: Option<String> = match self.db.conn() {
+            Ok(c) => db::global::networks::all(&c)
+                .await
+                .ok()
+                .and_then(|rows| {
+                    rows.into_iter()
+                        .find(|r| r.tenant_id == tenant_id)
+                        .map(|r| r.ip_address)
+                }),
+            Err(_) => None,
+        };
+        let Some(ip) = ip else { return };
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            tokio::process::Command::new("ssh")
+                .args([
+                    "-p",
+                    "2222",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "ConnectTimeout=5",
+                    &format!("root@{ip}"),
+                    "sync",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status(),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
     /// Kill a tenant's Firecracker process and remove its (now stale) API
     /// socket file, so an offline disk operation can proceed and the next
     /// spawn binds cleanly. Guest RAM state is discarded; disk data is
-    /// untouched (ext4 journal replays on next mount).
+    /// untouched (page cache synced first, ext4 journal replays on mount).
     pub async fn kill_vm_process(&self, tenant_id: &str) {
+        self.sync_guest_disk(tenant_id).await;
         let pattern = format!("/tmp/fc_{tenant_id}.sock");
         let _ = tokio::process::Command::new("pkill")
             .args(["-f", &pattern])
