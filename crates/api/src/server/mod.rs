@@ -273,6 +273,9 @@ async fn dispatch(
             admin::vms_shutdown(state, req).await
         }
         ("GET", ["api", "admin", "disks"]) => admin::disks_list(state, req).await,
+        ("GET", ["api", "admin", "dashboard"]) => {
+            admin::dashboard_snapshot(state, req).await
+        }
         ("GET", ["api", "admin", "stream"]) => match stream::admin_stream(state, req).await {
             Ok(r) => r,
             Err(_) => json::internal(),

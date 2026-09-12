@@ -1002,6 +1002,47 @@ pub async fn category_configs_delete(
     }
 }
 
+/// GET /api/admin/dashboard?tenant={id|all} -> snapshot JSON.
+/// Same shape as the WS stream frames, over plain REST: used by the admin
+/// UI as a fallback when websockets are blocked, and as a curl-debuggable
+/// probe (`?tenant=all` returns {tenants:[...]}).
+pub async fn dashboard_snapshot(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let tenant = req
+        .uri()
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .find_map(|pair| {
+            let mut it = pair.splitn(2, '=');
+            (it.next() == Some("tenant")).then(|| it.next().unwrap_or("").to_string())
+        })
+        .unwrap_or_default();
+    if tenant.trim().is_empty() {
+        return json::bad_request("missing ?tenant=<id|all>");
+    }
+    if tenant == "all" {
+        let ids: Vec<String> = match state.gdb.conn() {
+            Ok(c) => db::global::tenants::list(&c)
+                .await
+                .map(|rows| rows.into_iter().map(|t| t.id).collect())
+                .unwrap_or_default(),
+            Err(_) => return json::internal(),
+        };
+        let mut snaps = Vec::new();
+        for id in ids {
+            snaps.push(super::stream::snapshot(state, &id).await);
+        }
+        return json::ok(serde_json::json!({"tenants": snaps}));
+    }
+    json::ok(super::stream::snapshot(state, &tenant).await)
+}
+
 /// GET /api/admin/tools -> {tools:[{name, family, description}]}.
 /// Static catalog of every in-VM supervisor tool an admin may grant.
 pub async fn tools_catalog(
