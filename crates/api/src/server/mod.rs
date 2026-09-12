@@ -278,6 +278,10 @@ async fn dispatch(
             Err(_) => json::internal(),
         },
         ("GET", ["api", "admin", "logs"]) => admin::logs_list(state, req).await,
+        ("GET", ["api", "admin", "events"]) => match stream::admin_events(state, req).await {
+            Ok(r) => r,
+            Err(_) => json::internal(),
+        },
         ("GET", ["api", "admin", "categories", _, "configs"]) => {
             admin::category_configs_list(state, req).await
         }
