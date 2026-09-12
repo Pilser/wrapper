@@ -242,15 +242,20 @@ impl VmRuntime {
             anyhow::bail!("truncate data disk failed");
         }
         // 2. Filesystem check (replays the journal from the kill; must be
-        //    clean before resize). Failure here leaves a valid fs at the
-        //    OLD size — data safe, resize aborted.
+        //    clean before resize). e2fsck -p exits 0 (clean) or 1 (errors
+        //    corrected — equally fine); 2+ means uncorrected trouble.
+        //    Refusal here leaves a valid fs at the OLD size: data safe,
+        //    resize aborted.
         let ck = tokio::process::Command::new("e2fsck")
             .args(["-p", "-f"])
             .arg(&path)
             .status()
             .await?;
-        if !ck.success() {
-            anyhow::bail!("e2fsck data disk failed (image left at old size, data intact)");
+        match ck.code() {
+            Some(0) | Some(1) => {}
+            other => {
+                anyhow::bail!("e2fsck data disk failed (exit {other:?}; image left at old size, data intact)")
+            }
         }
         // 3. Grow the filesystem into the new space.
         let rs = tokio::process::Command::new("resize2fs")
