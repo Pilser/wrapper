@@ -259,13 +259,7 @@ impl VmRuntime {
     pub async fn kill_vm_process(&self, tenant_id: &str) {
         self.sync_guest_disk(tenant_id).await;
         let pattern = format!("/tmp/fc_{tenant_id}.sock");
-        let _ = tokio::process::Command::new("pkill")
-            .args(["-f", &pattern])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        kill_process_pattern(&pattern).await;
         let _ = std::fs::remove_file(format!("/tmp/fc_{tenant_id}.sock"));
     }
 
@@ -697,6 +691,44 @@ pub fn fc_socket_path(tenant_id: &str) -> std::path::PathBuf {
     sock_path(tenant_id)
 }
 
+/// Kill every process matching `pattern` (full-cmdline match), verified.
+/// SIGTERM first (lets Firecracker flush + exit cleanly), up to 5s grace,
+/// then SIGKILL stragglers and confirm absence. Fire-and-hope pkill caused
+/// a real incident: a SIGTERMed FC still answering during the next wake
+/// made the old generation serve traffic the new boot was meant to take.
+pub async fn kill_process_pattern(pattern: &str) {
+    let quiet = || {
+        let mut c = tokio::process::Command::new("pkill");
+        c.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        c
+    };
+    let alive = || async {
+        tokio::process::Command::new("pgrep")
+            .args(["-f", pattern])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    let _ = quiet().args(["-f", pattern]).status().await;
+    for _ in 0..10 {
+        if !alive().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    let _ = quiet().args(["-9", "-f", pattern]).status().await;
+    for _ in 0..4 {
+        if !alive().await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
 /// Kill a stale Firecracker still holding this tenant's tap/socket.
 /// Wrapper restarts orphan VMs BY DESIGN (guests outlive the wrapper so a
 /// restart doesn't kill tenants). But a dead-yet-holding FC (guest app
@@ -706,13 +738,7 @@ pub fn fc_socket_path(tenant_id: &str) -> std::path::PathBuf {
 /// Safe: the wrapper's own cmdline never contains the socket pattern.
 async fn kill_stale_holder(tenant_id: &str) {
     let pattern = format!("/tmp/fc_{tenant_id}.sock");
-    let _ = tokio::process::Command::new("pkill")
-        .args(["-f", &pattern])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    kill_process_pattern(&pattern).await;
 }
 
 fn sock_path(tenant_id: &str) -> std::path::PathBuf {

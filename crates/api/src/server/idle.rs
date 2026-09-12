@@ -71,14 +71,11 @@ pub async fn shutdown_tenant(state: &AppState, tenant_id: &str) -> anyhow::Resul
         }
     }
 
-    // 3. SIGTERM the Firecracker process by its deterministic API socket.
+    // 3. Stop the Firecracker process by its deterministic API socket,
+    //    VERIFIED dead (TERM -> grace -> KILL): an unverified kill lets a
+    //    dying VM answer the next wake probe and serve stale generations.
     let sock_pattern = format!("/tmp/fc_{tenant_id}.sock");
-    let _ = tokio::process::Command::new("pkill")
-        .args(["-f", &sock_pattern])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
+    vm::runtime::kill_process_pattern(&sock_pattern).await;
 
     // 4. Remove the tap device (best-effort; needs root). It is recreated
     //    with the identical name on restore (snapshot references it).
