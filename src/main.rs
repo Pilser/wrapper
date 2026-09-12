@@ -283,6 +283,11 @@ async fn async_main() -> anyhow::Result<()> {
         .map(|p| p.join("snapshots").to_string_lossy().to_string())
         .unwrap_or_else(|| "data/snapshots".to_string());
     let _ = std::fs::create_dir_all(&snapshots_dir);
+    let data_disks_dir = std::path::Path::new(&cfg.database.global_path)
+        .parent()
+        .map(|p| p.join("disks").to_string_lossy().to_string())
+        .unwrap_or_else(|| "data/disks".to_string());
+    let _ = std::fs::create_dir_all(&data_disks_dir);
     let telemetry_dir = std::path::Path::new(&cfg.telemetry.disk.path)
         .canonicalize()
         .map(|p| p.to_string_lossy().to_string())
@@ -299,6 +304,7 @@ async fn async_main() -> anyhow::Result<()> {
         public_base: cfg.api.public_base.clone(),
         disks_dir,
         snapshots_dir,
+        data_disks_dir,
         idle_timeout_minutes: cfg.vm.idle_timeout_minutes,
     };
     let serve_telemetry = telemetry.clone();

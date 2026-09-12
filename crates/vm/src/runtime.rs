@@ -34,6 +34,10 @@ pub const ZERO_WRAPPER_PORT: u16 = 9092;
 const DEFAULT_MEM_MIB: u32 = 512;
 const DEFAULT_VCPU: u32 = 2;
 
+/// Default per-tenant data-disk size (GiB, sparse — host pays only written
+/// blocks). Raised per tenant later via the admin resize action.
+pub const DEFAULT_DATA_DISK_GB: u64 = 2;
+
 #[derive(Clone)]
 pub struct VmRuntime {
     vm_manager: VmManager,
@@ -43,6 +47,7 @@ pub struct VmRuntime {
     kernel_path: String,
     initrd_path: String,
     snapshots_dir: String,
+    data_disks_dir: String,
 }
 
 impl VmRuntime {
@@ -62,6 +67,7 @@ impl VmRuntime {
             kernel_path: kernel_path.into(),
             initrd_path: initrd_path.into(),
             snapshots_dir: "data/snapshots".to_string(),
+            data_disks_dir: "data/disks".to_string(),
         })
     }
 
@@ -69,6 +75,66 @@ impl VmRuntime {
     pub fn with_snapshots_dir(mut self, dir: impl Into<String>) -> Self {
         self.snapshots_dir = dir.into();
         self
+    }
+
+    /// Directory holding per-tenant data-disk images (`<dir>/<tenant>.img`).
+    pub fn with_data_disks_dir(mut self, dir: impl Into<String>) -> Self {
+        self.data_disks_dir = dir.into();
+        self
+    }
+
+    /// Host path of a tenant's data-disk image. The tenant id is validated
+    /// to a safe charset so it can never escape the disks directory.
+    pub fn data_disk_path(&self, tenant_id: &str) -> anyhow::Result<std::path::PathBuf> {
+        if tenant_id.is_empty()
+            || !tenant_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            anyhow::bail!("invalid tenant id for disk path");
+        }
+        Ok(std::path::Path::new(&self.data_disks_dir).join(format!("{tenant_id}.img")))
+    }
+
+    /// Ensure the tenant's data disk exists (sparse `fallocate` + `mkfs.ext4`,
+    /// ~0.1 s for 2 GiB, paid once per tenant). Returns the image path.
+    /// Existing images are returned untouched — this never reformats.
+    pub async fn ensure_data_disk(&self, tenant_id: &str) -> anyhow::Result<std::path::PathBuf> {
+        let path = self.data_disk_path(tenant_id)?;
+        if path.exists() {
+            return Ok(path);
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let fallocate = tokio::process::Command::new("fallocate")
+            .args(["-l", &format!("{}G", DEFAULT_DATA_DISK_GB)])
+            .arg(&path)
+            .status()
+            .await?;
+        if !fallocate.success() {
+            anyhow::bail!("fallocate data disk failed");
+        }
+        let mkfs = tokio::process::Command::new("mkfs.ext4")
+            .args(["-q", "-E", "lazy_itable_init,lazy_journal_init", "-L", "zwdata"])
+            .arg(&path)
+            .status()
+            .await?;
+        if !mkfs.success() {
+            let _ = std::fs::remove_file(&path);
+            anyhow::bail!("mkfs.ext4 data disk failed");
+        }
+        self.telemetry
+            .builder()
+            .level(telemetry::Level::Info)
+            .kind("vm.disk.created")
+            .category("vm")
+            .tenant_id(Some(tenant_id.to_string()))
+            .data("path", path.to_string_lossy().to_string())
+            .data("size_gb", DEFAULT_DATA_DISK_GB.to_string())
+            .message(format!("data disk created for tenant {tenant_id}"))
+            .emit();
+        Ok(path)
     }
 
     /// Snapshot files for a tenant (state, mem).
@@ -306,12 +372,31 @@ impl VmRuntime {
             created_at: template.created_at,
             updated_at: template.updated_at,
         };
+        // Tenant data disk: created once (~0.1 s), attached every boot.
+        // Best-effort at the ensure step only — a tenant must still boot
+        // (diskless, as before) if disk creation fails; the failure is
+        // loud in telemetry so it cannot go unnoticed.
+        let data_disk = match self.ensure_data_disk(tenant_id).await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                self.telemetry
+                    .builder()
+                    .level(telemetry::Level::Warn)
+                    .kind("vm.disk.ensure_failed")
+                    .category("vm")
+                    .tenant_id(Some(tenant_id.to_string()))
+                    .message(format!("data disk unavailable, booting diskless: {e}"))
+                    .emit();
+                None
+            }
+        };
         crate::lifecycle::boot::boot_vm_with_net(
             &self.telemetry,
             &client,
             tenant_id,
             &boot_template,
             Some(&NetAttach::new(&tap, &guest_mac, &ip)),
+            data_disk.as_deref(),
         )
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;

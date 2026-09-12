@@ -42,6 +42,8 @@ pub struct AppState {
     pub disks_dir: String,
     /// Host directory for per-tenant snapshots (<dir>/<tenant>/{vmstate,mem}).
     pub snapshots_dir: String,
+    /// Host directory with per-tenant data-disk images (<dir>/<tenant>.img).
+    pub data_disks_dir: String,
     /// Idle minutes before auto-sleep (config `[vm]`, 0 = disabled).
     pub idle_timeout_minutes: u64,
 }
@@ -70,6 +72,8 @@ pub struct ServeParams {
     pub public_base: String,
     pub disks_dir: String,
     pub snapshots_dir: String,
+    /// Host dir with per-tenant data-disk images (`<dir>/<tenant>.img`).
+    pub data_disks_dir: String,
     pub idle_timeout_minutes: u64,
     /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
     pub telemetry_dir: String,
@@ -87,7 +91,8 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         expand_home(&p.kernel_path),
         expand_home(&p.initrd_path),
     )?
-    .with_snapshots_dir(p.snapshots_dir.clone());
+    .with_snapshots_dir(p.snapshots_dir.clone())
+    .with_data_disks_dir(p.data_disks_dir.clone());
     let activity = p.activity.clone();
     // Restart recovery BEFORE the runtime moves into handler/state: never
     // re-allocate an address a live VM still holds.
@@ -118,6 +123,7 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         idle_timeout_minutes: p.idle_timeout_minutes,
         disks_dir: p.disks_dir,
         snapshots_dir: p.snapshots_dir,
+        data_disks_dir: p.data_disks_dir,
         telemetry_dir: p.telemetry_dir,
     };
     if p.idle_timeout_minutes > 0 {

@@ -5,7 +5,7 @@ use telemetry::{Level, Telemetry};
 
 use crate::firecracker::boot_source::{boot_source, boot_source_with_net};
 use crate::firecracker::config::MachineConfig;
-use crate::firecracker::drive::root_drive;
+use crate::firecracker::drive::{data_drive, root_drive};
 use crate::firecracker::network::{gateway_for_ip, network_interface};
 use crate::firecracker::FirecrackerClient;
 
@@ -45,18 +45,23 @@ pub async fn boot_vm(
     tenant_id: &str,
     template: &VmTemplate,
 ) -> shared::Result<()> {
-    boot_vm_with_net(telemetry, client, tenant_id, template, None).await
+    boot_vm_with_net(telemetry, client, tenant_id, template, None, None).await
 }
 
 /// Boot a VM with a virtual NIC attached: PUT machine-config + boot-source
 /// (with `vm_ip=`/`gw=` kernel args) + PUT /network-interfaces/eth0 +
 /// drives, then start the instance.
+///
+/// `data_disk` is the host path of the tenant's ext4 data image, attached
+/// read-write as `data_disk` (guest `/dev/vda` when it is the only drive;
+/// `/init` mounts it at `/data`). `None` boots diskless (legacy behavior).
 pub async fn boot_vm_with_net(
     telemetry: &Telemetry,
     client: &FirecrackerClient,
     tenant_id: &str,
     template: &VmTemplate,
     net: Option<&NetAttach>,
+    data_disk: Option<&std::path::Path>,
 ) -> shared::Result<()> {
     telemetry
         .builder()
@@ -91,7 +96,16 @@ pub async fn boot_vm_with_net(
         Some(root_drive(&template.rootfs_path))
     };
 
-    let result = boot_vm_inner(client, &machine, &boot_cfg, net_cfg.as_ref(), root.as_ref()).await;
+    let data = data_disk.map(|p| data_drive(&p.to_string_lossy()));
+    let result = boot_vm_inner(
+        client,
+        &machine,
+        &boot_cfg,
+        net_cfg.as_ref(),
+        root.as_ref(),
+        data.as_ref(),
+    )
+    .await;
 
     match result {
         Ok(()) => {
@@ -125,6 +139,7 @@ async fn boot_vm_inner(
     boot_cfg: &crate::firecracker::BootSourceConfig,
     net: Option<&crate::firecracker::NetworkInterfaceConfig>,
     root: Option<&crate::firecracker::config::DriveConfig>,
+    data: Option<&crate::firecracker::config::DriveConfig>,
 ) -> shared::Result<()> {
     let machine_body =
         serde_json::to_value(machine).map_err(|e| CoreError::Vm(e.to_string()))?;
@@ -171,6 +186,18 @@ async fn boot_vm_inner(
             .put(&drive_path, &drive_body)
             .await
             .map_err(|e| CoreError::Vm(e.to_string()))?;
+    }
+    // Attach the tenant data disk (first/only drive -> guest /dev/vda).
+    // Best-effort is NOT an option here: a half-attached boot is worse than
+    // a failed one, so an attach error fails the boot loudly.
+    if let Some(data) = data {
+        let drive_body =
+            serde_json::to_value(data).map_err(|e| CoreError::Vm(e.to_string()))?;
+        let drive_path = format!("/drives/{}", data.drive_id);
+        client
+            .put(&drive_path, &drive_body)
+            .await
+            .map_err(|e| CoreError::Vm(format!("data disk attach: {e}")))?;
     }
     client
         .put_action("InstanceStart")
