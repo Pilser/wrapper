@@ -149,6 +149,18 @@ async fn boot_vm_inner(
             .await
             .map_err(|e| CoreError::Vm(format!("network interface: {e}")))?;
     }
+    // Attach a balloon device (stats only: amount 0 reclaims nothing).
+    // Gives per-VM memory pressure via GET /balloon/stats for the dashboard.
+    // Best-effort: old kernels without virtio_balloon ignore it; a failure
+    // here must never fail the boot.
+    let balloon_body = serde_json::json!({
+        "amount_mb": 0,
+        "deflate_on_oom": true,
+        "stats_polling_interval_s": 60,
+    });
+    // Intentionally ignored: kernels without virtio_balloon work fine,
+    // the dashboard just shows allocated memory instead of live pressure.
+    let _ = client.put("/balloon", &balloon_body).await;
     // Attach a root drive only when one is configured (initramfs-only VMs
     // boot straight from the initrd and need no block device).
     if let Some(root) = root {

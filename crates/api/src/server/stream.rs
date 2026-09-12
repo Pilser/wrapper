@@ -77,6 +77,9 @@ pub async fn snapshot(state: &AppState, tenant_id: &str) -> serde_json::Value {
         .activity
         .last(tenant_id)
         .map(|t| t.elapsed().as_secs());
+    // Live memory pressure from the balloon device (if the guest kernel
+    // has virtio_balloon; else null and the UI shows allocated memory).
+    let balloon = balloon_stats(tenant_id).await;
     serde_json::json!({
         "tenant": tenant_id,
         "vm": {
@@ -95,7 +98,27 @@ pub async fn snapshot(state: &AppState, tenant_id: &str) -> serde_json::Value {
             "memory_mb": t.memory_mb, "status": format!("{:?}", t.status),
         })),
         "heartbeat_age_secs": heartbeat_age,
+        "balloon": balloon,
     })
+}
+
+/// Best-effort balloon stats for one tenant (2s cap so a dead socket never
+/// stalls the dashboard tick). Returns the raw stats object or null.
+async fn balloon_stats(tenant_id: &str) -> serde_json::Value {
+    let path = vm::runtime::fc_socket_path(tenant_id);
+    if !path.exists() {
+        return serde_json::Value::Null;
+    }
+    let client = vm::FirecrackerClient::new(path.to_string_lossy().to_string());
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client.get("/balloon/stats"),
+    )
+    .await
+    {
+        Ok(Ok(v)) => v,
+        _ => serde_json::Value::Null,
+    }
 }
 
 type FullBody = http_body_util::Full<bytes::Bytes>;
@@ -173,11 +196,17 @@ pub async fn admin_events(
         filter.events.push(k.to_string());
     }
     let state = state.clone();
+    // Same ordering as admin_stream: await the upgrade before answering.
+    let upgraded = match hyper::upgrade::on(req).await {
+        Ok(u) => u,
+        Err(_) => {
+            return Ok(plain(
+                hyper::StatusCode::BAD_REQUEST,
+                "websocket upgrade failed",
+            ))
+        }
+    };
     tokio::spawn(async move {
-        let upgraded = match hyper::upgrade::on(req).await {
-            Ok(u) => u,
-            Err(_) => return,
-        };
         let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
             hyper_util::rt::TokioIo::new(upgraded),
             tokio_tungstenite::tungstenite::protocol::Role::Server,
@@ -283,12 +312,20 @@ pub async fn admin_stream(
     let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(
         ws_key.as_bytes(),
     );
+    // Await the upgrade BEFORE answering 101: responding first lets hyper
+    // finish (and close) the connection before the spawned task registers
+    // the upgrade future — browsers report it as "interrupted".
+    let upgraded = match hyper::upgrade::on(req).await {
+        Ok(u) => u,
+        Err(_) => {
+            return Ok(plain(
+                hyper::StatusCode::BAD_REQUEST,
+                "websocket upgrade failed",
+            ))
+        }
+    };
     let state = state.clone();
     tokio::spawn(async move {
-        let upgraded = match hyper::upgrade::on(req).await {
-            Ok(u) => u,
-            Err(_) => return,
-        };
         let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
             hyper_util::rt::TokioIo::new(upgraded),
             tokio_tungstenite::tungstenite::protocol::Role::Server,
