@@ -152,11 +152,17 @@ pub fn last_seg(req: &hyper::Request<hyper::body::Incoming>) -> String {
 
 /// Second-to-last segment (`.../tenants/{id}/suspend` -> `{id}`).
 pub fn second_last_seg(req: &hyper::Request<hyper::body::Incoming>) -> String {
+    nth_from_last_seg(req, 2)
+}
+
+/// Nth segment from the end (1 = last): `.../tenants/{id}/disk/resize`
+/// with n=3 yields `{id}`.
+pub fn nth_from_last_seg(req: &hyper::Request<hyper::body::Incoming>, n: usize) -> String {
     let segs: Vec<&str> = req
         .uri()
         .path()
         .split('/')
         .filter(|s| !s.is_empty())
         .collect();
-    segs.get(segs.len().saturating_sub(2)).unwrap_or(&"").to_string()
+    segs.get(segs.len().saturating_sub(n)).unwrap_or(&"").to_string()
 }

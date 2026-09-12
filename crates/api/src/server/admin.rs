@@ -1181,7 +1181,8 @@ pub async fn tenant_disk_resize(
     if let Err(e) = auth_ctx::require_admin(state, &req).await {
         return e;
     }
-    let tenant_id = json::second_last_seg(&req);
+    // Route: /api/admin/tenants/{id}/disk/resize -> id is 3rd from last.
+    let tenant_id = json::nth_from_last_seg(&req, 3);
     let body = match json::read_json(req).await {
         Ok(b) => b,
         Err(e) => return e,
