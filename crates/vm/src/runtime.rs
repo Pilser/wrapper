@@ -127,6 +127,20 @@ impl VmRuntime {
             let _ = std::fs::remove_file(&path);
             anyhow::bail!("mkfs.ext4 data disk failed");
         }
+        // Seed the fresh filesystem with workspace md files from
+        // deployment/workspace-seed/ (host dir, next to the wrapper binary).
+        // Best-effort: a seed failure never fails disk creation — the daemon
+        // lazy-creates defaults anyway, so the disk stays valid.
+        if let Err(e) = self.seed_workspace_on_image(&path).await {
+            self.telemetry
+                .builder()
+                .level(telemetry::Level::Warn)
+                .kind("vm.disk.seed_failed")
+                .category("vm")
+                .tenant_id(Some(tenant_id.to_string()))
+                .message(format!("workspace seed failed (disk valid, agent will lazy-create): {e}"))
+                .emit();
+        }
         self.telemetry
             .builder()
             .level(telemetry::Level::Info)
@@ -138,6 +152,72 @@ impl VmRuntime {
             .message(format!("data disk created for tenant {tenant_id}"))
             .emit();
         Ok(path)
+    }
+
+    /// Seed workspace md files into a freshly formatted image via loop mount.
+    /// Source: <wrapper-data-parent>/workspace-seed/*.md (deployment/workspace-seed
+    /// when running from deployment/wrapper/). Copies missing-only; never
+    /// clobbers whiteboard/ subdir. VM must be down (fresh image: it is).
+    async fn seed_workspace_on_image(&self, image: &std::path::Path) -> anyhow::Result<()> {
+        // Derive seed dir from the disks dir parent (deployment/): <parent>/workspace-seed
+        let seed_dir = std::path::Path::new(&self.data_disks_dir)
+            .parent()
+            .map(|p| p.join("workspace-seed"))
+            .unwrap_or_else(|| std::path::PathBuf::from("workspace-seed"));
+        if !seed_dir.exists() {
+            return Ok(());
+        }
+        let mnt = format!("/tmp/mnt-seed-{}", image.file_name().unwrap_or_default().to_string_lossy());
+        std::fs::create_dir_all(&mnt)?;
+        // Mount loop (needs root; wrapper runs as root).
+        let st = tokio::process::Command::new("mount")
+            .args(["-o", "loop", &image.to_string_lossy(), &mnt])
+            .status()
+            .await?;
+        if !st.success() {
+            let _ = std::fs::remove_dir(&mnt);
+            anyhow::bail!("mount loop failed for seed");
+        }
+        let ws = std::path::Path::new(&mnt).join("zeroclaw/agents/main/workspace");
+        let _ = std::fs::create_dir_all(&ws);
+        let mut seeded = 0usize;
+        if let Ok(entries) = std::fs::read_dir(&seed_dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("md") {
+                    continue;
+                }
+                let name = match p.file_name() {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let dst = ws.join(name);
+                if dst.exists() {
+                    continue;
+                }
+                if std::fs::copy(&p, &dst).is_ok() {
+                    seeded += 1;
+                }
+            }
+        }
+        // Ensure whiteboard subdir exists (flat whiteboard.wb lives here).
+        let _ = std::fs::create_dir_all(ws.join("whiteboard"));
+        let _ = tokio::process::Command::new("umount")
+            .arg(&mnt)
+            .status()
+            .await;
+        let _ = std::fs::remove_dir(&mnt);
+        if seeded > 0 {
+            self.telemetry
+                .builder()
+                .level(telemetry::Level::Info)
+                .kind("vm.disk.seeded")
+                .category("vm")
+                .data("files", seeded.to_string())
+                .message(format!("seeded {seeded} workspace files into {}", image.display()))
+                .emit();
+        }
+        Ok(())
     }
 
     /// Snapshot files for a tenant (state, mem).
@@ -211,6 +291,73 @@ impl VmRuntime {
             }
         }
         Some(blocks? * bsize?)
+    }
+
+    /// Sync workspace md files into an EXISTING tenant disk via offline loop
+    /// mount (missing-only unless `force`). VM must be down (socket absent);
+    /// caller kills first. Never touches whiteboard/ subdir. Returns count
+    /// of files written.
+    pub async fn sync_workspace_seed(
+        &self,
+        tenant_id: &str,
+        force: bool,
+    ) -> anyhow::Result<usize> {
+        let image = self.data_disk_path(tenant_id)?;
+        if !image.exists() {
+            anyhow::bail!("no data disk for tenant");
+        }
+        if crate::runtime::fc_socket_path(tenant_id).exists() {
+            anyhow::bail!("vm must be shut down before workspace sync (socket present)");
+        }
+        let seed_dir = std::path::Path::new(&self.data_disks_dir)
+            .parent()
+            .map(|p| p.join("workspace-seed"))
+            .unwrap_or_else(|| std::path::PathBuf::from("workspace-seed"));
+        if !seed_dir.exists() {
+            anyhow::bail!("seed dir missing: {}", seed_dir.display());
+        }
+        let mnt = format!("/tmp/mnt-ws-{}", tenant_id);
+        std::fs::create_dir_all(&mnt)?;
+        let st = tokio::process::Command::new("mount")
+            .args(["-o", "loop", &image.to_string_lossy(), &mnt])
+            .status()
+            .await?;
+        if !st.success() {
+            let _ = std::fs::remove_dir(&mnt);
+            anyhow::bail!("mount loop failed for workspace sync");
+        }
+        let ws = std::path::Path::new(&mnt).join("zeroclaw/agents/main/workspace");
+        let _ = std::fs::create_dir_all(&ws);
+        let _ = std::fs::create_dir_all(ws.join("whiteboard"));
+        let mut written = 0usize;
+        let entries = std::fs::read_dir(&seed_dir).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("md") {
+                continue;
+            }
+            let name = match p.file_name() {
+                Some(n) => n,
+                None => continue,
+            };
+            let dst = ws.join(name);
+            if dst.exists() && !force {
+                continue;
+            }
+            if force && dst.exists() {
+                let bak = format!("{}.bak-{}", dst.display(), chrono::Utc::now().format("%Y%m%d"));
+                let _ = std::fs::copy(&dst, &bak);
+            }
+            if std::fs::copy(&p, &dst).is_ok() {
+                written += 1;
+            }
+        }
+        let _ = tokio::process::Command::new("umount")
+            .arg(&mnt)
+            .status()
+            .await;
+        let _ = std::fs::remove_dir(&mnt);
+        Ok(written)
     }
 
     /// Flush the guest's page cache over SSH (`sync`) so a subsequent kill

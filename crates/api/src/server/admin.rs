@@ -1234,6 +1234,67 @@ pub async fn tenant_disk_resize(
     }
 }
 
+/// POST /api/admin/workspace/sync {tenant_id, force?} -> {written, re_waked}.
+/// Offline loop-mount merge of workspace-seed/*.md into the tenant's data
+/// disk (missing-only unless force). Kills the VM first when live, re-wakes
+/// when it was live; force overwrites with .bak-<date> backup.
+pub async fn workspace_sync(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let tenant_id = match body.get("tenant_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return json::bad_request("tenant_id required"),
+    };
+    let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    let was_live = vm::runtime::fc_socket_path(&tenant_id).exists();
+    if was_live {
+        runtime.kill_vm_process(&tenant_id).await;
+    }
+    match runtime.sync_workspace_seed(&tenant_id, force).await {
+        Ok(written) => {
+            let ip = if was_live {
+                state.activity.touch(&tenant_id);
+                runtime
+                    .ensure_running(&tenant_id)
+                    .await
+                    .ok()
+                    .and_then(|a| a.split(':').next().map(str::to_string))
+            } else {
+                None
+            };
+            json::ok(serde_json::json!({
+                "tenant_id": tenant_id,
+                "written": written,
+                "force": force,
+                "re_waked": ip.is_some(),
+                "ip": ip,
+            }))
+        }
+        Err(e) => {
+            if was_live {
+                state.activity.touch(&tenant_id);
+                let _ = runtime.ensure_running(&tenant_id).await;
+            }
+            json::json(
+                hyper::StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": "workspace sync failed", "detail": e.to_string()}),
+            )
+        }
+    }
+}
+
 // --------------------------------------------------------------------- disks
 /// GET /api/admin/disks -> {disks:[{name,path,size_bytes}]}: guest images
 /// (kernels, initramfs) present on the host. Admin picks these paths when
