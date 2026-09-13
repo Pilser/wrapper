@@ -158,12 +158,38 @@ impl VmRuntime {
     /// Source: <wrapper-data-parent>/workspace-seed/*.md (deployment/workspace-seed
     /// when running from deployment/wrapper/). Copies missing-only; never
     /// clobbers whiteboard/ subdir. VM must be down (fresh image: it is).
-    async fn seed_workspace_on_image(&self, image: &std::path::Path) -> anyhow::Result<()> {
-        // Derive seed dir from the disks dir parent (deployment/): <parent>/workspace-seed
-        let seed_dir = std::path::Path::new(&self.data_disks_dir)
+    fn workspace_seed_dir(&self) -> std::path::PathBuf {
+        // Prefer <disks_parent>/workspace-seed (deployment/wrapper/data/workspace-seed
+        // when disks_dir is "data/disks" relative), fallback to the canonical
+        // deployment/workspace-seed (absolute) so both layouts work.
+        let derived = std::path::Path::new(&self.data_disks_dir)
             .parent()
             .map(|p| p.join("workspace-seed"))
             .unwrap_or_else(|| std::path::PathBuf::from("workspace-seed"));
+        if derived.exists() {
+            return derived;
+        }
+        // Canonical deployment dir is two levels above wrapper/data when running
+        // from deployment/wrapper (wrapper/data -> wrapper -> deployment).
+        let canonical = std::path::Path::new(&self.data_disks_dir)
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.parent().and_then(|a| a.parent()).map(|a| a.join("workspace-seed")));
+        if let Some(c) = canonical {
+            if c.exists() {
+                return c;
+            }
+        }
+        // Last resort: absolute deployment path baked at build host.
+        let fallback = std::path::PathBuf::from("/home/vox/.AAAPROJECTS/FPE/AI-plan/deployment/workspace-seed");
+        if fallback.exists() {
+            return fallback;
+        }
+        derived
+    }
+
+    async fn seed_workspace_on_image(&self, image: &std::path::Path) -> anyhow::Result<()> {
+        let seed_dir = self.workspace_seed_dir();
         if !seed_dir.exists() {
             return Ok(());
         }
@@ -309,10 +335,7 @@ impl VmRuntime {
         if crate::runtime::fc_socket_path(tenant_id).exists() {
             anyhow::bail!("vm must be shut down before workspace sync (socket present)");
         }
-        let seed_dir = std::path::Path::new(&self.data_disks_dir)
-            .parent()
-            .map(|p| p.join("workspace-seed"))
-            .unwrap_or_else(|| std::path::PathBuf::from("workspace-seed"));
+        let seed_dir = self.workspace_seed_dir();
         if !seed_dir.exists() {
             anyhow::bail!("seed dir missing: {}", seed_dir.display());
         }
