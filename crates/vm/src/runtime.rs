@@ -158,7 +158,7 @@ impl VmRuntime {
     /// Source: <wrapper-data-parent>/workspace-seed/*.md (deployment/workspace-seed
     /// when running from deployment/wrapper/). Copies missing-only; never
     /// clobbers whiteboard/ subdir. VM must be down (fresh image: it is).
-    fn workspace_seed_dir(&self) -> std::path::PathBuf {
+    pub fn workspace_seed_dir(&self) -> std::path::PathBuf {
         // Prefer <disks_parent>/workspace-seed (deployment/wrapper/data/workspace-seed
         // when disks_dir is "data/disks" relative), fallback to the canonical
         // deployment/workspace-seed (absolute) so both layouts work.

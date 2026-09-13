@@ -279,8 +279,14 @@ async fn dispatch(
             admin::vms_shutdown(state, req).await
         }
         ("GET", ["api", "admin", "disks"]) => admin::disks_list(state, req).await,
+        ("GET", ["api", "admin", "workspace", "seed"]) => {
+            admin::workspace_seed_list(state, req).await
+        }
         ("POST", ["api", "admin", "workspace", "sync"]) => {
             admin::workspace_sync(state, req).await
+        }
+        ("POST", ["api", "admin", "workspace", "sync-bulk"]) => {
+            admin::workspace_sync_bulk(state, req).await
         }
         ("GET", ["api", "admin", "tenants", _, "disk"]) => {
             admin::tenant_disk_show(state, req).await

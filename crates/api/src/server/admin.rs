@@ -1234,10 +1234,45 @@ pub async fn tenant_disk_resize(
     }
 }
 
+/// GET /api/admin/workspace/seed -> {files:[{name,size,preview}]}: current
+/// workspace-seed/*.md on the host (what new tenants get + what sync pushes).
+pub async fn workspace_seed_list(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    let seed_dir = runtime.workspace_seed_dir();
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&seed_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("md") {
+                continue;
+            }
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            let meta = e.metadata().ok();
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let preview = std::fs::read_to_string(&p)
+                .map(|s| s.chars().take(400).collect::<String>())
+                .unwrap_or_default();
+            files.push(serde_json::json!({"name": name, "size_bytes": size, "preview": preview}));
+        }
+    }
+    files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    json::ok(serde_json::json!({"dir": seed_dir.to_string_lossy(), "files": files}))
+}
+
 /// POST /api/admin/workspace/sync {tenant_id, force?} -> {written, re_waked}.
 /// Offline loop-mount merge of workspace-seed/*.md into the tenant's data
 /// disk (missing-only unless force). Kills the VM first when live, re-wakes
 /// when it was live; force overwrites with .bak-<date> backup.
+/// Works for SLEEPING VMs too (disk image on host, no VM needed — just mount).
 pub async fn workspace_sync(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -1293,6 +1328,90 @@ pub async fn workspace_sync(
             )
         }
     }
+}
+
+/// POST /api/admin/workspace/sync-bulk {force?, tenant_ids?[], category_id?, all?}
+/// -> {results:[{tenant_id,written,re_waked,ip?,error?}], force}.
+/// Offline-safe: iterates sequentially (loop mounts contend if parallel).
+/// Resolves targets as: tenant_ids > category_id > all. Each tenant handled
+/// like workspace_sync (kill when live, mount-merge, re-wake when live).
+pub async fn workspace_sync_bulk(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let tenant_ids: Vec<String> = if let Some(arr) = body.get("tenant_ids").and_then(|v| v.as_array()) {
+        arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+    } else if let Some(cat) = body.get("category_id").and_then(|v| v.as_str()) {
+        let conn = match state.gdb.conn() {
+            Ok(c) => c,
+            Err(_) => return json::internal(),
+        };
+        match db::global::tenants::list(&conn).await {
+            Ok(rows) => rows.into_iter().filter(|t| t.category_id == cat).map(|t| t.id).collect(),
+            Err(_) => return json::internal(),
+        }
+    } else if body.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let conn = match state.gdb.conn() {
+            Ok(c) => c,
+            Err(_) => return json::internal(),
+        };
+        match db::global::tenants::list(&conn).await {
+            Ok(rows) => rows.into_iter().map(|t| t.id).collect(),
+            Err(_) => return json::internal(),
+        }
+    } else {
+        return json::bad_request("provide tenant_ids[] or category_id or all:true");
+    };
+    if tenant_ids.is_empty() {
+        return json::ok(serde_json::json!({"results": [], "force": force}));
+    }
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    let mut results = Vec::new();
+    for tid in tenant_ids {
+        let was_live = vm::runtime::fc_socket_path(&tid).exists();
+        if was_live {
+            runtime.kill_vm_process(&tid).await;
+        }
+        match runtime.sync_workspace_seed(&tid, force).await {
+            Ok(written) => {
+                let ip = if was_live {
+                    state.activity.touch(&tid);
+                    runtime
+                        .ensure_running(&tid)
+                        .await
+                        .ok()
+                        .and_then(|a| a.split(':').next().map(str::to_string))
+                } else {
+                    None
+                };
+                results.push(serde_json::json!({
+                    "tenant_id": tid, "written": written, "force": force,
+                    "re_waked": ip.is_some(), "ip": ip,
+                }));
+            }
+            Err(e) => {
+                if was_live {
+                    state.activity.touch(&tid);
+                    let _ = runtime.ensure_running(&tid).await;
+                }
+                results.push(serde_json::json!({
+                    "tenant_id": tid, "error": e.to_string(),
+                }));
+            }
+        }
+    }
+    json::ok(serde_json::json!({"results": results, "force": force}))
 }
 
 // --------------------------------------------------------------------- disks
