@@ -51,6 +51,11 @@ pub struct VmRuntime {
     initrd_path: String,
     snapshots_dir: String,
     data_disks_dir: String,
+    /// Per-tenant boot mutex: concurrent `ensure_running` for the same tenant
+    /// must serialize (otherwise two fresh_boots race on `networks.id` and the
+    /// second hits `UNIQUE constraint failed`). A refresh fires 6 parallel
+    /// proxy requests — without this they all try to boot at once.
+    boot_locks: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl VmRuntime {
@@ -71,6 +76,7 @@ impl VmRuntime {
             initrd_path: initrd_path.into(),
             snapshots_dir: "data/snapshots".to_string(),
             data_disks_dir: "data/disks".to_string(),
+            boot_locks: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -520,16 +526,31 @@ impl VmRuntime {
     }
 
     /// Ensure the tenant's VM is running; return its `IP:port`.
+    /// Serialized per-tenant: a browser refresh fires 6 parallel proxy
+    /// requests for the same tenant — without the lock they all race into
+    /// `fresh_boot` and the second hits `UNIQUE constraint failed: networks.id`.
+    /// The hot `live_vm` check runs lock-free first (fast path); the lock
+    /// is taken only when a boot/restore is actually needed, then re-checks.
     pub async fn ensure_running(&self, tenant_id: &str) -> anyhow::Result<String> {
-        // 1. Recorded VM that answers: hot path.
+        // Fast path: already running, no lock needed.
         if let Some(addr) = self.live_vm(tenant_id).await? {
             return Ok(addr);
         }
-        // 2. Recorded but dark + snapshot on disk: resume in place (same IP).
+        // Acquire per-tenant boot lock.
+        let lock = {
+            let mut map = self.boot_locks.lock().await;
+            map.entry(tenant_id.to_string())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+        // Re-check after acquiring lock — another waiter may have booted it.
+        if let Some(addr) = self.live_vm(tenant_id).await? {
+            return Ok(addr);
+        }
         if let Some(addr) = self.restore_if_snapshotted(tenant_id).await? {
             return Ok(addr);
         }
-        // 3. Fresh boot (clears any stale row first).
         self.fresh_boot(tenant_id).await
     }
 

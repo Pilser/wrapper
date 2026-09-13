@@ -13,7 +13,7 @@ pub struct NetReservation {
 
 pub async fn reserve(conn: &Connection, tenant_id: &str, ip: &str, tap: &str) -> anyhow::Result<()> {
     conn.execute(
-        "INSERT INTO networks (id, tenant_id, ip_address, tap_device, allocated_at) \
+        "INSERT OR REPLACE INTO networks (id, tenant_id, ip_address, tap_device, allocated_at) \
          VALUES (?1,?2,?3,?4,?5)",
         (format!("net_{tenant_id}"), tenant_id, ip, tap, crate::now_str()),
     ).await?;

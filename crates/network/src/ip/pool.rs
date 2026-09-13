@@ -1,16 +1,19 @@
 //! Pre-computed pool of tenant IPs with a mutex-protected free set.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use shared::NetworkConfig;
 use telemetry::Telemetry;
 
 /// A pool of allocatable tenant IPs drawn from `[network] ip_range`.
+/// Internally `Arc<Mutex<…>>` so every `VmRuntime` clone (proxy handler,
+/// wake handler) shares the SAME free/taken sets — a deep-clone would let
+/// two concurrent boots allocate the same IP and collide on `networks.id`.
 pub struct IpPool {
     gateway: String,
-    pub(crate) free: Mutex<HashSet<String>>,
-    pub(crate) taken: Mutex<HashMap<String, String>>, // tenant_id -> ip
+    pub(crate) free: Arc<Mutex<HashSet<String>>>,
+    pub(crate) taken: Arc<Mutex<HashMap<String, String>>>, // tenant_id -> ip
     telemetry: Telemetry,
 }
 
@@ -18,8 +21,8 @@ impl Clone for IpPool {
     fn clone(&self) -> Self {
         IpPool {
             gateway: self.gateway.clone(),
-            free: Mutex::new(self.free.lock().unwrap().clone()),
-            taken: Mutex::new(self.taken.lock().unwrap().clone()),
+            free: Arc::clone(&self.free),
+            taken: Arc::clone(&self.taken),
             telemetry: self.telemetry.clone(),
         }
     }
@@ -50,8 +53,8 @@ impl IpPool {
         }
         Self {
             gateway: cfg.gateway,
-            free: Mutex::new(free),
-            taken: Mutex::new(HashMap::new()),
+            free: Arc::new(Mutex::new(free)),
+            taken: Arc::new(Mutex::new(HashMap::new())),
             telemetry,
         }
     }
