@@ -49,5 +49,41 @@ CREATE INDEX IF NOT EXISTS idx_timeline_kind ON timeline(kind);
 
 pub async fn migrate(conn: &turso::Connection) -> anyhow::Result<()> {
     conn.execute_batch(TENANT_SCHEMA).await?;
+    // Upgrade heel for pre-portfolio DBs: profiles lacks `track`, and
+    // skills/reports/configs may still carry the legacy TEXT-id shapes
+    // (CREATE IF NOT EXISTS never replaces them). Best-effort, idempotent.
+    let _ = conn
+        .execute("ALTER TABLE profiles ADD COLUMN track TEXT DEFAULT ''", ())
+        .await;
+    for table in ["skills", "reports", "configs"] {
+        let mut rows = match conn
+            .query(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let mut legacy = false;
+        while let Ok(Some(row)) = rows.next().await {
+            let sql = row
+                .get_value(0)
+                .ok()
+                .and_then(|v| v.as_text().cloned())
+                .unwrap_or_default();
+            if sql.contains("id TEXT") || sql.contains("areas_to_improve") {
+                legacy = true;
+            }
+        }
+        if legacy {
+            let _ = conn
+                .execute(&format!("DROP TABLE IF EXISTS {table}"), ())
+                .await;
+        }
+    }
+    // Re-run creates for anything just dropped (idempotent).
+    conn.execute_batch(TENANT_SCHEMA).await?;
     Ok(())
 }
