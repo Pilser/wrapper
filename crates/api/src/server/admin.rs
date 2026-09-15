@@ -1175,10 +1175,11 @@ pub async fn vms_stop(
 }
 
 /// POST /api/admin/vms/{tenant_id}/kill -> {ok, status}.
-/// KILL: verified kill + snapshots deleted + network row released. Next wake
-/// FRESH-BOOTS (new IP, new image, disk prompt re-seeded). Use after image
-/// changes, boot-config changes, or a wedged guest. This is the button that
-/// guarantees "everything starts again".
+/// KILL: verified kill + snapshots deleted. IP row, tap and DATA DISK are
+/// KEPT — only RAM state goes. Next wake FRESH-BOOTS on the same IP (new
+/// image, disk prompt re-seeded). Use after image changes, boot-config
+/// changes, or a wedged guest. This is the button that guarantees the VM
+/// starts from down, never from a snapshot.
 pub async fn vms_kill(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -1196,13 +1197,6 @@ pub async fn vms_kill(
         Ok(c) => c,
         Err(_) => return json::internal(),
     };
-    let _ = db::global::networks::release_all(&conn, &tenant_id).await;
-    if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, &tenant_id).await {
-        t.vm_ip = None;
-        t.tap_device = None;
-        t.vm_process_id = None;
-        let _ = db::global::tenants::update(&conn, &t).await;
-    }
     let _ = db::global::tenants::set_status(
         &conn,
         &tenant_id,
