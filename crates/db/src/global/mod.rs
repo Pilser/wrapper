@@ -6,6 +6,7 @@ pub mod category_tools;
 pub mod deployment_configs;
 pub mod networks;
 pub mod sessions;
+pub mod launchers;
 pub mod staff;
 pub mod store;
 pub mod system_prompts;

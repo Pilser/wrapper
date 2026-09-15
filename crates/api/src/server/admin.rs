@@ -1567,6 +1567,98 @@ pub async fn system_prompt_set(
     }
 }
 
+/// GET /api/admin/launchers?scope=global|category|tenant&ref=<id>
+/// -> {scope, ref_id, scripts: {zw: content|null, engram: content|null}}.
+/// Reads the launcher scripts the supervisor will demand for that scope.
+pub async fn launchers_get(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let scope = query_param(&req, "scope");
+    let scope = if scope.is_empty() { "global".to_string() } else { scope };
+    if !["global", "category", "tenant"].contains(&scope.as_str()) {
+        return json::bad_request("scope must be global|category|tenant");
+    }
+    let ref_id = query_param(&req, "ref");
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    let mut scripts = serde_json::Map::new();
+    for name in db::global::launchers::NAMES {
+        match db::global::launchers::get(&conn, &scope, &ref_id, name).await {
+            Ok(c) => {
+                scripts.insert(
+                    name.to_string(),
+                    c.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
+                );
+            }
+            Err(_) => return json::internal(),
+        }
+    }
+    json::ok(serde_json::json!({ "scope": scope, "ref_id": ref_id, "scripts": scripts }))
+}
+
+/// PUT /api/admin/launchers {scope, ref_id?, name, content}
+/// -> {scope, ref_id, name}. Stores one launcher script row; supervisors
+/// pick it up on next demand (boot or crash-loop refetch).
+pub async fn launchers_set(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let scope = body
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("global")
+        .to_string();
+    if !["global", "category", "tenant"].contains(&scope.as_str()) {
+        return json::bad_request("scope must be global|category|tenant");
+    }
+    let ref_id = body
+        .get("ref_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if scope != "global" && ref_id.is_empty() {
+        return json::bad_request("ref_id required for category|tenant scope");
+    }
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !db::global::launchers::NAMES.contains(&name.as_str()) {
+        return json::bad_request("name must be zw|engram");
+    }
+    let content = body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if content.trim().is_empty() {
+        return json::bad_request("content must not be empty");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    match db::global::launchers::set(&conn, &scope, &ref_id, &name, &content, &shared::now_rfc3339()).await {
+        Ok(()) => json::ok(serde_json::json!({ "scope": scope, "ref_id": ref_id, "name": name })),
+        Err(_) => json::internal(),
+    }
+}
+
 /// DELETE /api/admin/system-prompt?scope=&ref= -> {deleted: bool}.
 /// Removes an override row (falls back to the next precedence level).
 pub async fn system_prompt_delete(

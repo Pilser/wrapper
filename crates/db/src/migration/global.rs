@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS system_prompts (
     scope TEXT NOT NULL, ref_id TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (scope, ref_id));
+-- Launcher scripts (guest /tmp programs) with the same scope precedence:
+-- tenant row > category row > global row. `name` is the program ('zw' or
+-- 'engram'). Edited from the admin portal; the supervisor demands them at
+-- boot and on repeated crashes. No baked launchers exist in the image.
+CREATE TABLE IF NOT EXISTS launcher_scripts (
+    scope TEXT NOT NULL, ref_id TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL, content TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (scope, ref_id, name));
 "#;
 
 pub async fn migrate(conn: &turso::Connection) -> anyhow::Result<()> {

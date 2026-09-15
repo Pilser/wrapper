@@ -36,6 +36,14 @@ pub async fn dispatch(
         "tools.granted" | "tools_granted" => {
             handle_tools_granted(envelope, db, telemetry).await
         }
+        // Asked by in-VM supervisors at boot (and on repeated program
+        // crashes): the launcher scripts that start this tenant's programs.
+        // No launchers are baked into the image; without these the guest
+        // runs nothing. Scope precedence per program: tenant > category >
+        // global. Missing program => supervisor keeps demanding.
+        "launchers.get" | "launchers_get" => {
+            handle_launchers_get(envelope, db, telemetry).await
+        }
         "heartbeat" => {
             crate::heartbeat::receive::handle_heartbeat(
                 &envelope.tenant_id,
@@ -164,6 +172,40 @@ async fn enforce_category_grant(
         )));
     }
     Ok(())
+}
+
+/// Answer `launchers.get` with `{scripts: {zw: {content, source}, engram:
+/// {...}}}` for this tenant. Scope precedence per program: tenant >
+/// category > global. A program with no row anywhere is reported with
+/// `content: null` — the supervisor keeps demanding until it appears.
+pub async fn handle_launchers_get(
+    envelope: &Envelope,
+    db: &db::Db,
+    telemetry: &Telemetry,
+) -> Result<Value> {
+    let _ = telemetry;
+    let gconn = db
+        .global()
+        .conn()
+        .map_err(|e| Error::Database(e.to_string()))?;
+    let tenant_id = envelope.tenant_id.as_str();
+    let category_id = db::global::tenants::get_by_id(&gconn, tenant_id)
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?
+        .map(|t| t.category_id)
+        .unwrap_or_default();
+    let mut scripts = serde_json::Map::new();
+    for name in db::global::launchers::NAMES {
+        let (content, source) =
+            db::global::launchers::effective(&gconn, tenant_id, &category_id, name)
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+        scripts.insert(
+            name.to_string(),
+            serde_json::json!({ "content": content, "source": source }),
+        );
+    }
+    Ok(serde_json::json!({ "scripts": scripts }))
 }
 
 /// Answer `tools.granted` with `{tools, restricted}` for this tenant.

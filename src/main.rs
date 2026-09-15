@@ -88,6 +88,49 @@ async fn async_main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&cfg.database.tenants_dir)
         .map_err(|e| anyhow::anyhow!(format!("tenants dir: {e}")))?;
 
+    // 5b. Seed global launcher scripts from the host launchers dir
+    // (deployment/launchers/{zw,engram}.sh) when the DB rows are empty.
+    // Never overwrites portal edits. Supervisors demand these at boot.
+    {
+        let candidates = [
+            std::path::PathBuf::from("../launchers"),
+            std::path::PathBuf::from("deployment/launchers"),
+        ];
+        if let Ok(conn) = gdb.conn() {
+            for dir in candidates {
+                if !dir.join("zw.sh").exists() && !dir.join("engram.sh").exists() {
+                    continue;
+                }
+                match db::global::launchers::seed_global_if_empty(
+                    &conn,
+                    &dir,
+                    &shared::now_rfc3339(),
+                )
+                .await
+                {
+                    Ok(0) => {}
+                    Ok(n) => telemetry
+                        .builder()
+                        .level(Level::Info)
+                        .kind("db.launchers_seeded")
+                        .category("db")
+                        .source("wrapper::main")
+                        .message(format!("seeded {n} global launcher scripts from {}", dir.display()))
+                        .emit(),
+                    Err(e) => telemetry
+                        .builder()
+                        .level(Level::Warn)
+                        .kind("db.launchers_seed_failed")
+                        .category("db")
+                        .source("wrapper::main")
+                        .message(format!("launcher seed failed: {e}"))
+                        .emit(),
+                }
+                break;
+            }
+        }
+    }
+
     // 6. vm::templates::init() → load registered VM templates.
     // 7. vm::manager::init() → check Firecracker binary.
     let vm_api = api::vm::VmApi::new(telemetry.clone());

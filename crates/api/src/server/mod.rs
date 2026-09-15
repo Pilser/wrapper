@@ -313,6 +313,12 @@ async fn dispatch(
         ("DELETE", ["api", "admin", "system-prompt"]) => {
             admin::system_prompt_delete(state, req).await
         }
+        ("GET", ["api", "admin", "launchers"]) => {
+            admin::launchers_get(state, req).await
+        }
+        ("PUT", ["api", "admin", "launchers"]) => {
+            admin::launchers_set(state, req).await
+        }
         ("GET", ["api", "admin", "tenants", _, "disk"]) => {
             admin::tenant_disk_show(state, req).await
         }
