@@ -332,7 +332,7 @@ impl VmRuntime {
                     .level(telemetry::Level::Info)
                     .kind("vm.disk.prompt_seeded")
                     .category("vm")
-                    .data("source", source)
+                    .data("source", source.clone())
                     .message(format!("seeded SYSTEM.md ({source}) into {}", image.display()))
                     .emit();
             }
