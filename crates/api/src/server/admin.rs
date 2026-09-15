@@ -6,7 +6,6 @@
 //! any staff row exists, so frontend onboarding is: bootstrap -> login ->
 //! create categories/templates -> create tenants.
 
-use futures_util::TryStreamExt;
 use shared::{Category, CategoryStatus, Tenant, TenantStatus, VmTemplate, VmTemplateStatus};
 
 use super::auth_ctx;
@@ -1743,39 +1742,20 @@ pub async fn supervisor_binaries_file(
         return json::bad_request("bad path");
     }
     let full = std::path::PathBuf::from(&state.binaries_dir).join(&rel);
-    let file = match tokio::fs::File::open(&full).await {
-        Ok(f) => f,
+    // Wrapper-side read: the host has RAM to spare, and `ApiResponse` is
+    // `Response<Full<Bytes>>` (no streaming body type). The GUEST streams
+    // this to disk in 256KB pieces, so a 92MB engram never lands in the VM's
+    // 490MB RAM (that was the reboot-loop cause).
+    let data = match std::fs::read(&full) {
+        Ok(d) => d,
         Err(_) => return json::not_found("binary not found"),
     };
-    let size = file.metadata().await.map(|m| m.len()).ok();
-    // Stream with a blocking reader in bounded chunks: no new deps, and a
-    // 92MB engram never lands in wrapper RAM.
-    let body = http_body_util::StreamBody::new(
-        futures_util::stream::try_unfold(file, |mut f| async move {
-            use tokio::io::AsyncReadExt;
-            let mut buf = vec![0u8; 256 * 1024];
-            match f.read(&mut buf).await {
-                Ok(0) => Ok(None),
-                Ok(n) => {
-                    buf.truncate(n);
-                    Ok(Some((hyper::body::Frame::data(buf), f)))
-                }
-                Err(e) => Err(e),
-            }
-        })
-        .map_ok(std::convert::identity),
-    );
-    let mut res = hyper::Response::new(hyper::body::boxed(body));
+    let mut res = hyper::Response::new(hyper::body::Full::new(hyper::body::Bytes::from(data)));
     *res.status_mut() = hyper::StatusCode::OK;
     res.headers_mut().insert(
         hyper::header::CONTENT_TYPE,
         hyper::header::HeaderValue::from_static("application/octet-stream"),
     );
-    if let Some(size) = size {
-        if let Ok(v) = hyper::header::HeaderValue::from_str(&size.to_string()) {
-            res.headers_mut().insert(hyper::header::CONTENT_LENGTH, v);
-        }
-    }
     res
 }
 
