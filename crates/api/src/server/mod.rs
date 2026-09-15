@@ -304,6 +304,9 @@ async fn dispatch(
         ("GET", ["api", "admin", "system-prompt", "effective"]) => {
             admin::system_prompt_effective(state, req).await
         }
+        ("DELETE", ["api", "admin", "system-prompt"]) => {
+            admin::system_prompt_delete(state, req).await
+        }
         ("GET", ["api", "admin", "tenants", _, "disk"]) => {
             admin::tenant_disk_show(state, req).await
         }

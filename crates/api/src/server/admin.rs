@@ -1538,6 +1538,51 @@ pub async fn system_prompt_set(
     }
 }
 
+/// DELETE /api/admin/system-prompt?scope=&ref= -> {deleted: bool}.
+/// Removes an override row (falls back to the next precedence level).
+pub async fn system_prompt_delete(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    // Scope/ref come from the query string or (portal) the JSON body.
+    let (mut scope, mut ref_id) = (query_param(&req, "scope"), query_param(&req, "ref"));
+    if scope.is_empty() {
+        if let Ok(body) = json::read_json(req).await {
+            scope = body
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            ref_id = body
+                .get("ref")
+                .and_then(|v| v.as_str())
+                .or_else(|| body.get("ref_id").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+        }
+    }
+    if !["global", "category", "tenant"].contains(&scope.as_str()) {
+        return json::bad_request("scope must be global|category|tenant");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    match conn
+        .execute(
+            "DELETE FROM system_prompts WHERE scope = ?1 AND ref_id = ?2",
+            (scope.as_str(), ref_id.as_str()),
+        )
+        .await
+    {
+        Ok(n) => json::ok(serde_json::json!({"deleted": n > 0})),
+        Err(_) => json::internal(),
+    }
+}
+
 /// GET /api/admin/system-prompt/effective?tenant_id= -> {tenant_id, content,
 /// source}. Shows exactly what the tenant's disk gets (tenant > category >
 /// global > host-file).
