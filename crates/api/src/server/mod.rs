@@ -172,7 +172,10 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
                     let is_api = path == "/api"
                         || path.starts_with("/api/auth")
                         || path.starts_with("/api/me")
-                        || path.starts_with("/api/admin");
+                        || path.starts_with("/api/admin")
+                        // In-VM supervisor fetch endpoints (binaries): no
+                        // admin session exists inside the guest.
+                        || path.starts_with("/api/supervisor");
                     if is_api {
                         if req.method() == hyper::Method::OPTIONS {
                             return Ok::<_, anyhow::Error>(json::cors_preflight());
