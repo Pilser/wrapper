@@ -228,25 +228,41 @@ pub async fn handle_binaries_get(
     if !shared::binaries::validate_rel(rel) {
         return Err(Error::InvalidInput("bad path".to_string()));
     }
-    let full = std::fs::read(binaries_host_dir().join(rel))
-        .map_err(|_| Error::NotFound(format!("binary not found: {rel}")))?;
+    let full_path = binaries_host_dir().join(rel);
+    let size = std::fs::metadata(&full_path)
+        .map_err(|_| Error::NotFound(format!("binary not found: {rel}")))?
+        .len();
     let offset = payload
         .get("offset")
         .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
+        .unwrap_or(0);
     let len = payload
         .get("len")
         .and_then(|v| v.as_u64())
-        .unwrap_or(262_144) as usize;
-    let len = len.clamp(1, 1_048_576);
-    if offset > full.len() {
+        .unwrap_or(262_144)
+        .clamp(1, 1_048_576);
+    if offset > size {
         return Err(Error::InvalidInput("offset past end".to_string()));
     }
-    let end = std::cmp::min(offset + len, full.len());
+    let want = std::cmp::min(len, size - offset) as usize;
+    // Seek-read ONLY the requested slice: reading the whole file per chunk
+    // turned a 140MB transfer into 33GB of disk reads (~2s/chunk).
+    let chunk = {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(&full_path)
+            .map_err(|_| Error::NotFound(format!("binary not found: {rel}")))?;
+        f.seek(SeekFrom::Start(offset))
+            .map_err(|e| Error::InvalidInput(format!("seek: {e}")))?;
+        let mut buf = vec![0u8; want];
+        f.read_exact(&mut buf)
+            .map_err(|e| Error::InvalidInput(format!("read: {e}")))?;
+        buf
+    };
+    // No sha here: the manifest already carries it and hashing per chunk
+    // would re-read the whole file every time.
     Ok(serde_json::json!({
-        "data_base64": base64_encode(&full[offset..end]),
-        "sha256": shared::binaries::sha256_bytes(&full),
-        "size": full.len(),
+        "data_base64": base64_encode(&chunk),
+        "size": size,
     }))
 }
 
