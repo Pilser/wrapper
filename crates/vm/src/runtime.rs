@@ -314,7 +314,9 @@ impl VmRuntime {
         )
         .await;
         if !prompt.is_empty() {
-            let zws = std::path::Path::new(&mnt).join("zerowrapper/workspace");
+            // Kept OUTSIDE zerowrapper/workspace: the agent must not see or
+            // edit its own system prompt; zw reads it via ZS_SYSTEM_PROMPT_FILE.
+            let zws = std::path::Path::new(&mnt).join("zerowrapper");
             let _ = std::fs::create_dir_all(&zws);
             if std::fs::write(zws.join("SYSTEM.md"), &prompt).is_ok() {
                 self.telemetry
@@ -479,7 +481,8 @@ impl VmRuntime {
         let (prompt, source) =
             resolve_system_prompt(&self.db, &self.host_system_prompt_path(), tenant_id).await;
         if !prompt.is_empty() {
-            let zws = std::path::Path::new(&mnt).join("zerowrapper/workspace");
+            // Outside zerowrapper/workspace: hidden from the agent.
+            let zws = std::path::Path::new(&mnt).join("zerowrapper");
             let _ = std::fs::create_dir_all(&zws);
             let dst = zws.join("SYSTEM.md");
             if dst.exists() {
