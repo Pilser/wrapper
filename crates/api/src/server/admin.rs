@@ -1130,8 +1130,19 @@ pub async fn vms_list(
 }
 
 /// POST /api/admin/vms/{tenant_id}/shutdown -> 200 (frees IP; next request
-/// re-wakes).
+/// re-wakes). Legacy alias of `sleep`.
 pub async fn vms_shutdown(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    vms_sleep(state, req).await
+}
+
+/// POST /api/admin/vms/{tenant_id}/sleep -> {ok, status}.
+/// SLEEP: snapshot RAM first, then verified kill. Next wake RESTORES fast
+/// (same IP, RAM preserved). Use before image changes that keep the boot
+/// configuration, or to park an idle tenant.
+pub async fn vms_sleep(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
 ) -> ApiResponse {
@@ -1140,9 +1151,66 @@ pub async fn vms_shutdown(
     }
     let tenant_id = json::second_last_seg(&req);
     match idle::shutdown_tenant(state, &tenant_id).await {
-        Ok(()) => json::ok(serde_json::json!({"ok": true, "status": "asleep"})),
+        Ok(()) => json::ok(serde_json::json!({"ok": true, "status": "asleep", "mode": "sleep"})),
         Err(_) => json::internal(),
     }
+}
+
+/// POST /api/admin/vms/{tenant_id}/stop -> {ok, status}.
+/// STOP: verified kill only — no new snapshot, existing snapshots kept.
+/// Next wake restores if a snapshot exists, else fresh-boots. The VM is
+/// simply off; nothing is wiped.
+pub async fn vms_stop(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let tenant_id = json::second_last_seg(&req);
+    let sock_pattern = format!("/tmp/fc_{tenant_id}.sock");
+    vm::runtime::kill_process_pattern(&sock_pattern).await;
+    state.activity.remove(&tenant_id);
+    json::ok(serde_json::json!({"ok": true, "status": "asleep", "mode": "stop"}))
+}
+
+/// POST /api/admin/vms/{tenant_id}/kill -> {ok, status}.
+/// KILL: verified kill + snapshots deleted + network row released. Next wake
+/// FRESH-BOOTS (new IP, new image, disk prompt re-seeded). Use after image
+/// changes, boot-config changes, or a wedged guest. This is the button that
+/// guarantees "everything starts again".
+pub async fn vms_kill(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let tenant_id = json::second_last_seg(&req);
+    let sock_pattern = format!("/tmp/fc_{tenant_id}.sock");
+    vm::runtime::kill_process_pattern(&sock_pattern).await;
+    if let Some(runtime) = &state.runtime {
+        let _ = runtime.delete_snapshots(&tenant_id);
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    let _ = db::global::networks::release_all(&conn, &tenant_id).await;
+    if let Ok(Some(mut t)) = db::global::tenants::get_by_id(&conn, &tenant_id).await {
+        t.vm_ip = None;
+        t.tap_device = None;
+        t.vm_process_id = None;
+        let _ = db::global::tenants::update(&conn, &t).await;
+    }
+    let _ = db::global::tenants::set_status(
+        &conn,
+        &tenant_id,
+        shared::TenantStatus::Asleep.as_str(),
+    )
+    .await;
+    state.activity.remove(&tenant_id);
+    json::ok(serde_json::json!({"ok": true, "status": "asleep", "mode": "kill"}))
 }
 
 // ------------------------------------------------------- tenant data disk
@@ -1241,45 +1309,11 @@ pub async fn tenant_disk_resize(
     }
 }
 
-/// GET /api/admin/workspace/seed -> {files:[{name,size,preview}]}: current
-/// workspace-seed/*.md on the host (what new tenants get + what sync pushes).
-pub async fn workspace_seed_list(
-    state: &AppState,
-    req: hyper::Request<hyper::body::Incoming>,
-) -> ApiResponse {
-    if let Err(e) = auth_ctx::require_admin(state, &req).await {
-        return e;
-    }
-    let runtime = match &state.runtime {
-        Some(r) => r.clone(),
-        None => return json::unavailable("vm runtime not configured"),
-    };
-    let seed_dir = runtime.workspace_seed_dir();
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&seed_dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("md") {
-                continue;
-            }
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-            let meta = e.metadata().ok();
-            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let preview = std::fs::read_to_string(&p)
-                .map(|s| s.chars().take(400).collect::<String>())
-                .unwrap_or_default();
-            files.push(serde_json::json!({"name": name, "size_bytes": size, "preview": preview}));
-        }
-    }
-    files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-    json::ok(serde_json::json!({"dir": seed_dir.to_string_lossy(), "files": files}))
-}
-
-/// POST /api/admin/workspace/sync {tenant_id, force?} -> {written, re_waked}.
-/// Offline loop-mount merge of workspace-seed/*.md into the tenant's data
-/// disk (missing-only unless force). Kills the VM first when live, re-wakes
-/// when it was live; force overwrites with .bak-<date> backup.
-/// Works for SLEEPING VMs too (disk image on host, no VM needed — just mount).
+/// POST /api/admin/workspace/sync {tenant_id} -> {written, re_waked}.
+/// Pushes the resolved agent system prompt (SYSTEM.md) into the tenant's
+/// data disk via offline loop mount (`.bak-date` backup). Kills the VM
+/// first when live, re-wakes when it was live so zw picks the prompt up.
+/// Works for SLEEPING VMs too (disk image on host, no VM needed).
 pub async fn workspace_sync(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -1337,11 +1371,12 @@ pub async fn workspace_sync(
     }
 }
 
-/// POST /api/admin/workspace/sync-bulk {force?, tenant_ids?[], category_id?, all?}
-/// -> {results:[{tenant_id,written,re_waked,ip?,error?}], force}.
-/// Offline-safe: iterates sequentially (loop mounts contend if parallel).
-/// Resolves targets as: tenant_ids > category_id > all. Each tenant handled
-/// like workspace_sync (kill when live, mount-merge, re-wake when live).
+/// POST /api/admin/workspace/sync-bulk {tenant_ids?[], category_id?, all?}
+/// -> {results:[{tenant_id,written,re_waked,ip?,error?}]}.
+/// Pushes SYSTEM.md to many tenants. Offline-safe: iterates sequentially
+/// (loop mounts contend if parallel). Resolves targets as: tenant_ids >
+/// category_id > all. Each tenant handled like workspace_sync (kill when
+/// live, write prompt, re-wake when live).
 pub async fn workspace_sync_bulk(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,

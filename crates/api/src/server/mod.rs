@@ -285,10 +285,16 @@ async fn dispatch(
         ("POST", ["api", "admin", "vms", _, "shutdown"]) => {
             admin::vms_shutdown(state, req).await
         }
-        ("GET", ["api", "admin", "disks"]) => admin::disks_list(state, req).await,
-        ("GET", ["api", "admin", "workspace", "seed"]) => {
-            admin::workspace_seed_list(state, req).await
+        ("POST", ["api", "admin", "vms", _, "sleep"]) => {
+            admin::vms_sleep(state, req).await
         }
+        ("POST", ["api", "admin", "vms", _, "stop"]) => {
+            admin::vms_stop(state, req).await
+        }
+        ("POST", ["api", "admin", "vms", _, "kill"]) => {
+            admin::vms_kill(state, req).await
+        }
+        ("GET", ["api", "admin", "disks"]) => admin::disks_list(state, req).await,
         ("POST", ["api", "admin", "workspace", "sync"]) => {
             admin::workspace_sync(state, req).await
         }

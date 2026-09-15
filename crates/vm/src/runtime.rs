@@ -202,10 +202,10 @@ impl VmRuntime {
             let _ = std::fs::remove_file(&path);
             anyhow::bail!("mkfs.ext4 data disk failed");
         }
-        // Seed the fresh filesystem with workspace md files from
-        // deployment/workspace-seed/ (host dir, next to the wrapper binary).
-        // Best-effort: a seed failure never fails disk creation — the daemon
-        // lazy-creates defaults anyway, so the disk stays valid.
+        // Seed the fresh filesystem with the agent system prompt
+        // (SYSTEM.md resolved tenant > category > global > host file).
+        // Best-effort: a seed failure never fails disk creation — the guest
+        // falls back to the baked /etc/supervisor/SYSTEM.md.
         if let Err(e) = self.seed_workspace_on_image(&path).await {
             self.telemetry
                 .builder()
@@ -237,45 +237,10 @@ impl VmRuntime {
         host_system_prompt_path_for(&self.system_prompt_host_path, &self.data_disks_dir)
     }
 
-    /// Seed workspace md files into a freshly formatted image via loop mount.
-    /// Source: <wrapper-data-parent>/workspace-seed/*.md (deployment/workspace-seed
-    /// when running from deployment/wrapper/). Copies missing-only; never
-    /// clobbers whiteboard/ subdir. VM must be down (fresh image: it is).
-    pub fn workspace_seed_dir(&self) -> std::path::PathBuf {
-        // Prefer <disks_parent>/workspace-seed (deployment/wrapper/data/workspace-seed
-        // when disks_dir is "data/disks" relative), fallback to the canonical
-        // deployment/workspace-seed (absolute) so both layouts work.
-        let derived = std::path::Path::new(&self.data_disks_dir)
-            .parent()
-            .map(|p| p.join("workspace-seed"))
-            .unwrap_or_else(|| std::path::PathBuf::from("workspace-seed"));
-        if derived.exists() {
-            return derived;
-        }
-        // Canonical deployment dir is two levels above wrapper/data when running
-        // from deployment/wrapper (wrapper/data -> wrapper -> deployment).
-        let canonical = std::path::Path::new(&self.data_disks_dir)
-            .canonicalize()
-            .ok()
-            .and_then(|p| p.parent().and_then(|a| a.parent()).map(|a| a.join("workspace-seed")));
-        if let Some(c) = canonical {
-            if c.exists() {
-                return c;
-            }
-        }
-        // Last resort: absolute deployment path baked at build host.
-        let fallback = std::path::PathBuf::from("/home/vox/.AAAPROJECTS/FPE/AI-plan/deployment/workspace-seed");
-        if fallback.exists() {
-            return fallback;
-        }
-        derived
-    }
-
+    /// Seed the agent system prompt into a freshly formatted image via loop
+    /// mount. Single managed file — no multi-file seed anymore. VM must be
+    /// down (fresh image: it is).
     async fn seed_workspace_on_image(&self, image: &std::path::Path) -> anyhow::Result<()> {
-        let seed_dir = self.workspace_seed_dir();
-        if !seed_dir.exists() {
-            return Ok(());
-        }
         let mnt = format!("/tmp/mnt-seed-{}", image.file_name().unwrap_or_default().to_string_lossy());
         std::fs::create_dir_all(&mnt)?;
         // Mount loop (needs root; wrapper runs as root).
@@ -287,30 +252,6 @@ impl VmRuntime {
             let _ = std::fs::remove_dir(&mnt);
             anyhow::bail!("mount loop failed for seed");
         }
-        let ws = std::path::Path::new(&mnt).join("zeroclaw/agents/main/workspace");
-        let _ = std::fs::create_dir_all(&ws);
-        let mut seeded = 0usize;
-        if let Ok(entries) = std::fs::read_dir(&seed_dir) {
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) != Some("md") {
-                    continue;
-                }
-                let name = match p.file_name() {
-                    Some(n) => n,
-                    None => continue,
-                };
-                let dst = ws.join(name);
-                if dst.exists() {
-                    continue;
-                }
-                if std::fs::copy(&p, &dst).is_ok() {
-                    seeded += 1;
-                }
-            }
-        }
-        // Ensure whiteboard subdir exists (flat whiteboard.wb lives here).
-        let _ = std::fs::create_dir_all(ws.join("whiteboard"));
         // Agent system prompt for zw (ZS_SYSTEM_PROMPT_FILE in the guest):
         // resolved tenant > category > global > host file, written to the
         // new-workdir location on the data disk.
@@ -342,16 +283,6 @@ impl VmRuntime {
             .status()
             .await;
         let _ = std::fs::remove_dir(&mnt);
-        if seeded > 0 {
-            self.telemetry
-                .builder()
-                .level(telemetry::Level::Info)
-                .kind("vm.disk.seeded")
-                .category("vm")
-                .data("files", seeded.to_string())
-                .message(format!("seeded {seeded} workspace files into {}", image.display()))
-                .emit();
-        }
         Ok(())
     }
 
@@ -428,14 +359,13 @@ impl VmRuntime {
         Some(blocks? * bsize?)
     }
 
-    /// Sync workspace md files into an EXISTING tenant disk via offline loop
-    /// mount (missing-only unless `force`). VM must be down (socket absent);
-    /// caller kills first. Never touches whiteboard/ subdir. Returns count
-    /// of files written.
+    /// Sync the agent system prompt into an EXISTING tenant disk via offline
+    /// loop mount (always refresh, `.bak-date` backup). VM must be down
+    /// (socket absent); caller kills first. Returns 1 when written.
     pub async fn sync_workspace_seed(
         &self,
         tenant_id: &str,
-        force: bool,
+        _force: bool,
     ) -> anyhow::Result<usize> {
         let image = self.data_disk_path(tenant_id)?;
         if !image.exists() {
@@ -443,10 +373,6 @@ impl VmRuntime {
         }
         if crate::runtime::fc_socket_path(tenant_id).exists() {
             anyhow::bail!("vm must be shut down before workspace sync (socket present)");
-        }
-        let seed_dir = self.workspace_seed_dir();
-        if !seed_dir.exists() {
-            anyhow::bail!("seed dir missing: {}", seed_dir.display());
         }
         let mnt = format!("/tmp/mnt-ws-{}", tenant_id);
         std::fs::create_dir_all(&mnt)?;
@@ -458,32 +384,7 @@ impl VmRuntime {
             let _ = std::fs::remove_dir(&mnt);
             anyhow::bail!("mount loop failed for workspace sync");
         }
-        let ws = std::path::Path::new(&mnt).join("zeroclaw/agents/main/workspace");
-        let _ = std::fs::create_dir_all(&ws);
-        let _ = std::fs::create_dir_all(ws.join("whiteboard"));
         let mut written = 0usize;
-        let entries = std::fs::read_dir(&seed_dir).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) != Some("md") {
-                continue;
-            }
-            let name = match p.file_name() {
-                Some(n) => n,
-                None => continue,
-            };
-            let dst = ws.join(name);
-            if dst.exists() && !force {
-                continue;
-            }
-            if force && dst.exists() {
-                let bak = format!("{}.bak-{}", dst.display(), chrono::Utc::now().format("%Y%m%d"));
-                let _ = std::fs::copy(&dst, &bak);
-            }
-            if std::fs::copy(&p, &dst).is_ok() {
-                written += 1;
-            }
-        }
         // Agent system prompt (managed file: always refresh from the resolved
         // tenant > category > global > host-file source, backing up first).
         let (prompt, source) =
