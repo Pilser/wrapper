@@ -330,6 +330,12 @@ async fn dispatch(
         ("GET", ["api", "admin", "binaries"]) => {
             admin::binaries_list(state, req).await
         }
+        ("GET", ["api", "supervisor", "binaries", "manifest"]) => {
+            admin::supervisor_binaries_manifest(state, req).await
+        }
+        ("GET", ["api", "supervisor", "binaries", "file"]) => {
+            admin::supervisor_binaries_file(state, req).await
+        }
         ("PUT", ["api", "admin", "binaries", "file"]) => {
             admin::binaries_upload(state, req).await
         }

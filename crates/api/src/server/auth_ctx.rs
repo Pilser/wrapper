@@ -66,6 +66,19 @@ pub async fn require_admin(
     }
 }
 
+/// Require a supervisor principal: any non-empty Bearer token, matching the
+/// supervisor TCP channel's rule (`listener/authenticate.rs`). Used by the
+/// in-VM binary fetch endpoints — no admin session exists inside the guest.
+pub fn require_supervisor(
+    _state: &AppState,
+    req: &hyper::Request<hyper::body::Incoming>,
+) -> Result<(), ApiResponse> {
+    match json::bearer(req) {
+        Some(t) if !t.trim().is_empty() => Ok(()),
+        _ => Err(json::unauthorized()),
+    }
+}
+
 fn session_expired(expires_at: &str) -> bool {
     expires_at
         .parse::<DateTime<Utc>>()

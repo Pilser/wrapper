@@ -6,6 +6,7 @@
 //! any staff row exists, so frontend onboarding is: bootstrap -> login ->
 //! create categories/templates -> create tenants.
 
+use futures_util::TryStreamExt;
 use shared::{Category, CategoryStatus, Tenant, TenantStatus, VmTemplate, VmTemplateStatus};
 
 use super::auth_ctx;
@@ -1710,6 +1711,72 @@ pub async fn launchers_delete(
         Ok(n) => json::ok(serde_json::json!({"deleted": n > 0})),
         Err(_) => json::internal(),
     }
+}
+
+/// GET /api/supervisor/binaries/manifest (Bearer = non-empty token)
+/// -> {files:[{path,sha256,size}]}. Guest supervisors demand binaries with
+/// this; kept out of the admin surface (no session in the VM).
+pub async fn supervisor_binaries_manifest(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_supervisor(state, &req) {
+        return e;
+    }
+    let dir = std::path::PathBuf::from(&state.binaries_dir);
+    let files = shared::binaries::manifest(&dir);
+    json::ok(serde_json::json!({ "files": files }))
+}
+
+/// GET /api/supervisor/binaries/file?path=<rel> (Bearer = wrapper
+/// auth_token) -> raw octet-stream. Streams from disk so a 92MB engram
+/// never lands in wrapper RAM.
+pub async fn supervisor_binaries_file(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_supervisor(state, &req) {
+        return e;
+    }
+    let rel = query_param(&req, "path");
+    if !shared::binaries::validate_rel(&rel) {
+        return json::bad_request("bad path");
+    }
+    let full = std::path::PathBuf::from(&state.binaries_dir).join(&rel);
+    let file = match tokio::fs::File::open(&full).await {
+        Ok(f) => f,
+        Err(_) => return json::not_found("binary not found"),
+    };
+    let size = file.metadata().await.map(|m| m.len()).ok();
+    // Stream with a blocking reader in bounded chunks: no new deps, and a
+    // 92MB engram never lands in wrapper RAM.
+    let body = http_body_util::StreamBody::new(
+        futures_util::stream::try_unfold(file, |mut f| async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = vec![0u8; 256 * 1024];
+            match f.read(&mut buf).await {
+                Ok(0) => Ok(None),
+                Ok(n) => {
+                    buf.truncate(n);
+                    Ok(Some((hyper::body::Frame::data(buf), f)))
+                }
+                Err(e) => Err(e),
+            }
+        })
+        .map_ok(std::convert::identity),
+    );
+    let mut res = hyper::Response::new(hyper::body::boxed(body));
+    *res.status_mut() = hyper::StatusCode::OK;
+    res.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Some(size) = size {
+        if let Ok(v) = hyper::header::HeaderValue::from_str(&size.to_string()) {
+            res.headers_mut().insert(hyper::header::CONTENT_LENGTH, v);
+        }
+    }
+    res
 }
 
 /// GET /api/admin/binaries -> {dir, files:[{path,sha256,size}]}.
