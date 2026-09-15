@@ -125,6 +125,12 @@ pub fn parse(text: &str) -> Result<Config> {
         "idle_timeout_minutes",
         cfg.vm.idle_timeout_minutes,
     )?;
+    cfg.vm.system_prompt_host_path = str_val(
+        &table,
+        "vm",
+        "system_prompt_host_path",
+        cfg.vm.system_prompt_host_path,
+    )?;
     cfg.api.public_base = str_val(&table, "api", "public_base", cfg.api.public_base)?;
     cfg.telemetry.enabled = bool_val(&table, "telemetry", "enabled", cfg.telemetry.enabled)?;
     cfg.telemetry.output = str_val(&table, "telemetry", "output", cfg.telemetry.output)?;

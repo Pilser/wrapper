@@ -305,6 +305,7 @@ async fn async_main() -> anyhow::Result<()> {
         disks_dir,
         snapshots_dir,
         data_disks_dir,
+        system_prompt_host_path: cfg.vm.system_prompt_host_path.clone(),
         idle_timeout_minutes: cfg.vm.idle_timeout_minutes,
     };
     let serve_telemetry = telemetry.clone();

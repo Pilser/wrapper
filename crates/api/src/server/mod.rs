@@ -44,6 +44,8 @@ pub struct AppState {
     pub snapshots_dir: String,
     /// Host directory with per-tenant data-disk images (<dir>/<tenant>.img).
     pub data_disks_dir: String,
+    /// Host path of the default agent system prompt (config `[vm]`).
+    pub system_prompt_host_path: String,
     /// Idle minutes before auto-sleep (config `[vm]`, 0 = disabled).
     pub idle_timeout_minutes: u64,
 }
@@ -74,6 +76,9 @@ pub struct ServeParams {
     pub snapshots_dir: String,
     /// Host dir with per-tenant data-disk images (`<dir>/<tenant>.img`).
     pub data_disks_dir: String,
+    /// Host path of the default agent system prompt (`[vm]`
+    /// `system_prompt_host_path`).
+    pub system_prompt_host_path: String,
     pub idle_timeout_minutes: u64,
     /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
     pub telemetry_dir: String,
@@ -92,7 +97,8 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         expand_home(&p.initrd_path),
     )?
     .with_snapshots_dir(p.snapshots_dir.clone())
-    .with_data_disks_dir(p.data_disks_dir.clone());
+    .with_data_disks_dir(p.data_disks_dir.clone())
+    .with_system_prompt_host_path(p.system_prompt_host_path.clone());
     let activity = p.activity.clone();
     // Restart recovery BEFORE the runtime moves into handler/state: never
     // re-allocate an address a live VM still holds.
@@ -124,6 +130,7 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         disks_dir: p.disks_dir,
         snapshots_dir: p.snapshots_dir,
         data_disks_dir: p.data_disks_dir,
+        system_prompt_host_path: p.system_prompt_host_path,
         telemetry_dir: p.telemetry_dir,
     };
     if p.idle_timeout_minutes > 0 {

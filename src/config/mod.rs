@@ -203,12 +203,19 @@ pub struct VmSection {
     /// request re-wakes the VM (wake-on-request round trip).
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout_minutes: u64,
+    /// Host path of the default agent system prompt (zw
+    /// ZS_SYSTEM_PROMPT_FILE source of last resort: tenant row > category
+    /// row > global row > this file). Relative paths resolve against the
+    /// wrapper's working dir. Empty = probe relative to the disks dir.
+    #[serde(default)]
+    pub system_prompt_host_path: String,
 }
 
 impl Default for VmSection {
     fn default() -> Self {
         Self {
             idle_timeout_minutes: default_idle_timeout(),
+            system_prompt_host_path: String::new(),
         }
     }
 }

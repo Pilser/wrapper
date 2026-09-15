@@ -1440,7 +1440,10 @@ fn query_param(req: &hyper::Request<hyper::body::Incoming>, key: &str) -> String
 fn host_prompt_path(state: &AppState) -> std::path::PathBuf {
     match &state.runtime {
         Some(r) => r.host_system_prompt_path(),
-        None => vm::runtime::host_system_prompt_path_for(&state.data_disks_dir),
+        None => vm::runtime::host_system_prompt_path_for(
+            &state.system_prompt_host_path,
+            &state.data_disks_dir,
+        ),
     }
 }
 

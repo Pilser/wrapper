@@ -39,8 +39,17 @@ const DEFAULT_VCPU: u32 = 2;
 pub const DEFAULT_DATA_DISK_GB: u64 = 2;
 
 /// Host path of the default agent system prompt without a runtime handle
-/// (admin handlers in degraded mode). Same probing as the method version.
-pub fn host_system_prompt_path_for(data_disks_dir: &str) -> std::path::PathBuf {
+/// (admin handlers in degraded mode). `configured` wins (wrapper `[vm]`
+/// `system_prompt_host_path`, relative to the wrapper cwd); otherwise probe
+/// `zerowrapper-mono/SYSTEM.md` next to the deployment. Never absolute:
+/// returns empty when nothing resolves.
+pub fn host_system_prompt_path_for(
+    configured: &str,
+    data_disks_dir: &str,
+) -> std::path::PathBuf {
+    if !configured.trim().is_empty() {
+        return std::path::PathBuf::from(configured);
+    }
     if let Ok(canon) = std::path::Path::new(data_disks_dir).canonicalize() {
         if let Some(deployment) = canon.parent().and_then(|a| a.parent()) {
             let p = deployment.join("zerowrapper-mono/SYSTEM.md");
@@ -49,20 +58,7 @@ pub fn host_system_prompt_path_for(data_disks_dir: &str) -> std::path::PathBuf {
             }
         }
     }
-    let derived = std::path::Path::new(data_disks_dir)
-        .parent()
-        .map(|p| {
-            p.parent()
-                .map(|a| a.join("zerowrapper-mono/SYSTEM.md"))
-                .unwrap_or_else(|| std::path::PathBuf::from("zerowrapper-mono/SYSTEM.md"))
-        })
-        .unwrap_or_else(|| std::path::PathBuf::from("zerowrapper-mono/SYSTEM.md"));
-    if derived.exists() {
-        return derived;
-    }
-    std::path::PathBuf::from(
-        "/home/vox/.AAAPROJECTS/FPE/AI-plan/deployment/zerowrapper-mono/SYSTEM.md",
-    )
+    std::path::PathBuf::new()
 }
 
 /// Tenant id from a data-disk image path (`<tenant_id>.img`).
@@ -113,6 +109,9 @@ pub struct VmRuntime {
     initrd_path: String,
     snapshots_dir: String,
     data_disks_dir: String,
+    /// Configured host path of the default agent system prompt (`[vm]`
+    /// `system_prompt_host_path`). Empty = probe relative to the disks dir.
+    system_prompt_host_path: String,
     /// Per-tenant boot mutex: concurrent `ensure_running` for the same tenant
     /// must serialize (otherwise two fresh_boots race on `networks.id` and the
     /// second hits `UNIQUE constraint failed`). A refresh fires 6 parallel
@@ -138,6 +137,7 @@ impl VmRuntime {
             initrd_path: initrd_path.into(),
             snapshots_dir: "data/snapshots".to_string(),
             data_disks_dir: "data/disks".to_string(),
+            system_prompt_host_path: String::new(),
             boot_locks: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         })
     }
@@ -151,6 +151,13 @@ impl VmRuntime {
     /// Directory holding per-tenant data-disk images (`<dir>/<tenant>.img`).
     pub fn with_data_disks_dir(mut self, dir: impl Into<String>) -> Self {
         self.data_disks_dir = dir.into();
+        self
+    }
+
+    /// Host path of the default agent system prompt (`[vm]`
+    /// `system_prompt_host_path`).
+    pub fn with_system_prompt_host_path(mut self, path: impl Into<String>) -> Self {
+        self.system_prompt_host_path = path.into();
         self
     }
 
@@ -227,7 +234,7 @@ impl VmRuntime {
     /// `workspace_seed_dir`: derived from the disks dir, then the canonical
     /// deployment path, then the absolute build-host fallback.
     pub fn host_system_prompt_path(&self) -> std::path::PathBuf {
-        host_system_prompt_path_for(&self.data_disks_dir)
+        host_system_prompt_path_for(&self.system_prompt_host_path, &self.data_disks_dir)
     }
 
     /// Seed workspace md files into a freshly formatted image via loop mount.
