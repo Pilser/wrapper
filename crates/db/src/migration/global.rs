@@ -41,6 +41,16 @@ CREATE TABLE IF NOT EXISTS category_tools (
     category_id TEXT NOT NULL, tool TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (category_id, tool));
+-- Agent system prompt (zw ZS_SYSTEM_PROMPT_FILE) with scope precedence:
+-- tenant row > category row > global row > host SYSTEM.md file.
+-- scope is 'global' (ref_id ''), 'category' (ref_id category_id) or
+-- 'tenant' (ref_id tenant_id). Edited from the admin portal, distributed
+-- to tenant disks at /data/zerowrapper/workspace/SYSTEM.md via the
+-- workspace sync endpoints (same offline loop-mount path as seed files).
+CREATE TABLE IF NOT EXISTS system_prompts (
+    scope TEXT NOT NULL, ref_id TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (scope, ref_id));
 "#;
 
 pub async fn migrate(conn: &turso::Connection) -> anyhow::Result<()> {

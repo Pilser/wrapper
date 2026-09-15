@@ -288,6 +288,15 @@ async fn dispatch(
         ("POST", ["api", "admin", "workspace", "sync-bulk"]) => {
             admin::workspace_sync_bulk(state, req).await
         }
+        ("GET", ["api", "admin", "system-prompt"]) => {
+            admin::system_prompt_get(state, req).await
+        }
+        ("PUT", ["api", "admin", "system-prompt"]) => {
+            admin::system_prompt_set(state, req).await
+        }
+        ("GET", ["api", "admin", "system-prompt", "effective"]) => {
+            admin::system_prompt_effective(state, req).await
+        }
         ("GET", ["api", "admin", "tenants", _, "disk"]) => {
             admin::tenant_disk_show(state, req).await
         }

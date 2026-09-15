@@ -38,6 +38,68 @@ const DEFAULT_VCPU: u32 = 2;
 /// blocks). Raised per tenant later via the admin resize action.
 pub const DEFAULT_DATA_DISK_GB: u64 = 2;
 
+/// Host path of the default agent system prompt without a runtime handle
+/// (admin handlers in degraded mode). Same probing as the method version.
+pub fn host_system_prompt_path_for(data_disks_dir: &str) -> std::path::PathBuf {
+    if let Ok(canon) = std::path::Path::new(data_disks_dir).canonicalize() {
+        if let Some(deployment) = canon.parent().and_then(|a| a.parent()) {
+            let p = deployment.join("zerowrapper-mono/SYSTEM.md");
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    let derived = std::path::Path::new(data_disks_dir)
+        .parent()
+        .map(|p| {
+            p.parent()
+                .map(|a| a.join("zerowrapper-mono/SYSTEM.md"))
+                .unwrap_or_else(|| std::path::PathBuf::from("zerowrapper-mono/SYSTEM.md"))
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("zerowrapper-mono/SYSTEM.md"));
+    if derived.exists() {
+        return derived;
+    }
+    std::path::PathBuf::from(
+        "/home/vox/.AAAPROJECTS/FPE/AI-plan/deployment/zerowrapper-mono/SYSTEM.md",
+    )
+}
+
+/// Tenant id from a data-disk image path (`<tenant_id>.img`).
+fn tenant_id_from_image(image: &std::path::Path) -> String {
+    image
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Resolve the effective agent system prompt for a tenant:
+/// tenant row > category row > global row > host SYSTEM.md file.
+/// Returns `(content, source)` where source is `tenant:<id>`,
+/// `category:<id>`, `global` or `host-file`.
+pub async fn resolve_system_prompt(
+    gdb: &db::global::GlobalDb,
+    host_path: &std::path::Path,
+    tenant_id: &str,
+) -> (String, String) {
+    if let Ok(conn) = gdb.conn() {
+        let category_id = db::global::tenants::get_by_id(&conn, tenant_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|t| t.category_id)
+            .unwrap_or_default();
+        if let Ok((Some(content), source)) =
+            db::global::system_prompts::effective(&conn, tenant_id, &category_id).await
+        {
+            return (content, source);
+        }
+    }
+    let content = std::fs::read_to_string(host_path).unwrap_or_default();
+    (content, "host-file".to_string())
+}
+
 /// Hard cap for data-disk resizes (GiB). Grow-only; shrinking is refused.
 pub const MAX_DATA_DISK_GB: u64 = 64;
 
@@ -160,6 +222,14 @@ impl VmRuntime {
         Ok(path)
     }
 
+    /// Host path of the default agent system prompt
+    /// (`deployment/zerowrapper-mono/SYSTEM.md`). Same layout probing as
+    /// `workspace_seed_dir`: derived from the disks dir, then the canonical
+    /// deployment path, then the absolute build-host fallback.
+    pub fn host_system_prompt_path(&self) -> std::path::PathBuf {
+        host_system_prompt_path_for(&self.data_disks_dir)
+    }
+
     /// Seed workspace md files into a freshly formatted image via loop mount.
     /// Source: <wrapper-data-parent>/workspace-seed/*.md (deployment/workspace-seed
     /// when running from deployment/wrapper/). Copies missing-only; never
@@ -234,6 +304,29 @@ impl VmRuntime {
         }
         // Ensure whiteboard subdir exists (flat whiteboard.wb lives here).
         let _ = std::fs::create_dir_all(ws.join("whiteboard"));
+        // Agent system prompt for zw (ZS_SYSTEM_PROMPT_FILE in the guest):
+        // resolved tenant > category > global > host file, written to the
+        // new-workdir location on the data disk.
+        let (prompt, source) = resolve_system_prompt(
+            &self.db,
+            &self.host_system_prompt_path(),
+            tenant_id_from_image(&image),
+        )
+        .await;
+        if !prompt.is_empty() {
+            let zws = std::path::Path::new(&mnt).join("zerowrapper/workspace");
+            let _ = std::fs::create_dir_all(&zws);
+            if std::fs::write(zws.join("SYSTEM.md"), &prompt).is_ok() {
+                self.telemetry
+                    .builder()
+                    .level(telemetry::Level::Info)
+                    .kind("vm.disk.prompt_seeded")
+                    .category("vm")
+                    .data("source", source)
+                    .message(format!("seeded SYSTEM.md ({source}) into {}", image.display()))
+                    .emit();
+            }
+        }
         let _ = tokio::process::Command::new("umount")
             .arg(&mnt)
             .status()
@@ -379,6 +472,34 @@ impl VmRuntime {
             }
             if std::fs::copy(&p, &dst).is_ok() {
                 written += 1;
+            }
+        }
+        // Agent system prompt (managed file: always refresh from the resolved
+        // tenant > category > global > host-file source, backing up first).
+        let (prompt, source) =
+            resolve_system_prompt(&self.db, &self.host_system_prompt_path(), tenant_id).await;
+        if !prompt.is_empty() {
+            let zws = std::path::Path::new(&mnt).join("zerowrapper/workspace");
+            let _ = std::fs::create_dir_all(&zws);
+            let dst = zws.join("SYSTEM.md");
+            if dst.exists() {
+                let bak = format!(
+                    "{}.bak-{}",
+                    dst.display(),
+                    chrono::Utc::now().format("%Y%m%d")
+                );
+                let _ = std::fs::copy(&dst, &bak);
+            }
+            if std::fs::write(&dst, &prompt).is_ok() {
+                written += 1;
+                self.telemetry
+                    .builder()
+                    .level(telemetry::Level::Info)
+                    .kind("vm.disk.prompt_synced")
+                    .category("vm")
+                    .data("source", source)
+                    .message(format!("synced SYSTEM.md ({source}) for tenant {tenant_id}"))
+                    .emit();
             }
         }
         let _ = tokio::process::Command::new("umount")

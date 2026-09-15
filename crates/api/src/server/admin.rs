@@ -1421,6 +1421,142 @@ pub async fn workspace_sync_bulk(
     json::ok(serde_json::json!({"results": results, "force": force}))
 }
 
+// ------------------------------------------------------- system prompt
+fn query_param(req: &hyper::Request<hyper::body::Incoming>, key: &str) -> String {
+    req.uri()
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .filter_map(|pair| {
+            let mut it = pair.splitn(2, '=');
+            let k = it.next()?;
+            let v = it.next().unwrap_or("");
+            (k == key).then(|| v.to_string())
+        })
+        .next()
+        .unwrap_or_default()
+}
+
+fn host_prompt_path(state: &AppState) -> std::path::PathBuf {
+    match &state.runtime {
+        Some(r) => r.host_system_prompt_path(),
+        None => vm::runtime::host_system_prompt_path_for(&state.data_disks_dir),
+    }
+}
+
+/// GET /api/admin/system-prompt?scope=global|category|tenant&ref=<id>
+/// -> {scope, ref_id, content, source}. `source` is `db`, `host-file`
+/// (global fallback so the editor never opens empty) or `none`.
+pub async fn system_prompt_get(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let scope = query_param(&req, "scope");
+    let scope = if scope.is_empty() { "global".to_string() } else { scope };
+    if !["global", "category", "tenant"].contains(&scope.as_str()) {
+        return json::bad_request("scope must be global|category|tenant");
+    }
+    let ref_id = query_param(&req, "ref");
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    match db::global::system_prompts::get(&conn, &scope, &ref_id).await {
+        Ok(Some(c)) => json::ok(serde_json::json!({
+            "scope": scope, "ref_id": ref_id, "content": c, "source": "db",
+        })),
+        Ok(None) => {
+            let (content, source) = if scope == "global" {
+                let hp = host_prompt_path(state);
+                (
+                    std::fs::read_to_string(hp).unwrap_or_default(),
+                    "host-file".to_string(),
+                )
+            } else {
+                (String::new(), "none".to_string())
+            };
+            json::ok(serde_json::json!({
+                "scope": scope, "ref_id": ref_id, "content": content, "source": source,
+            }))
+        }
+        Err(_) => json::internal(),
+    }
+}
+
+/// PUT /api/admin/system-prompt {scope, ref_id?, content} -> {scope, ref_id}.
+/// Stores one scope row; distribution to tenant disks happens through the
+/// workspace sync endpoints (SYSTEM.md is written on every sync).
+pub async fn system_prompt_set(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let scope = body
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("global")
+        .to_string();
+    if !["global", "category", "tenant"].contains(&scope.as_str()) {
+        return json::bad_request("scope must be global|category|tenant");
+    }
+    let ref_id = body
+        .get("ref_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if scope != "global" && ref_id.is_empty() {
+        return json::bad_request("ref_id required for category|tenant scope");
+    }
+    let content = body
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if content.trim().is_empty() {
+        return json::bad_request("content must not be empty");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    match db::global::system_prompts::set(&conn, &scope, &ref_id, &content, &shared::now_rfc3339()).await {
+        Ok(()) => json::ok(serde_json::json!({"scope": scope, "ref_id": ref_id})),
+        Err(_) => json::internal(),
+    }
+}
+
+/// GET /api/admin/system-prompt/effective?tenant_id= -> {tenant_id, content,
+/// source}. Shows exactly what the tenant's disk gets (tenant > category >
+/// global > host-file).
+pub async fn system_prompt_effective(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let tenant_id = query_param(&req, "tenant_id");
+    if tenant_id.trim().is_empty() {
+        return json::bad_request("missing ?tenant_id=");
+    }
+    let hp = host_prompt_path(state);
+    let (content, source) =
+        vm::runtime::resolve_system_prompt(&state.gdb, &hp, &tenant_id).await;
+    json::ok(serde_json::json!({
+        "tenant_id": tenant_id, "content": content, "source": source,
+    }))
+}
+
 // --------------------------------------------------------------------- disks
 /// GET /api/admin/disks -> {disks:[{name,path,size_bytes}]}: guest images
 /// (kernels, initramfs) present on the host. Admin picks these paths when

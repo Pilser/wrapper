@@ -8,6 +8,7 @@ pub mod networks;
 pub mod sessions;
 pub mod staff;
 pub mod store;
+pub mod system_prompts;
 pub mod tenants;
 pub mod vm_templates;
 
