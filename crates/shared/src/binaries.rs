@@ -40,12 +40,12 @@ fn hex_encode(bytes: impl AsRef<[u8]>) -> String {
 /// manifest. Missing dir = empty manifest (nothing to demand yet).
 pub fn manifest(dir: &std::path::Path) -> Vec<BinaryEntry> {
     let mut out = Vec::new();
-    let mut walk = |rel: &str, full: std::path::PathBuf| {
+    let mut walk = |rel: String, full: std::path::PathBuf| {
         let Ok(data) = std::fs::read(&full) else {
             return;
         };
         out.push(BinaryEntry {
-            path: rel.to_string(),
+            path: rel,
             sha256: sha256_bytes(&data),
             size: data.len() as u64,
         });
@@ -55,7 +55,7 @@ pub fn manifest(dir: &std::path::Path) -> Vec<BinaryEntry> {
             let p = e.path();
             if p.is_file() {
                 if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                    walk(name, p);
+                    walk(name.to_string(), p);
                 }
             }
         }
@@ -66,7 +66,7 @@ pub fn manifest(dir: &std::path::Path) -> Vec<BinaryEntry> {
             let p = e.path();
             if p.is_file() {
                 if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                    walk(&format!("zw-assets/{name}"), p);
+                    walk(format!("zw-assets/{name}"), p);
                 }
             }
         }
