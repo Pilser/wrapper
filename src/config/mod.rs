@@ -28,6 +28,8 @@ pub struct Config {
     #[serde(default)]
     pub deployments: DeploymentsSection,
     #[serde(default)]
+    pub binaries: BinariesSection,
+    #[serde(default)]
     pub vm: VmSection,
     #[serde(default)]
     pub api: ApiSection,
@@ -46,6 +48,7 @@ impl Default for Config {
             plugins: PluginsSection::default(),
             categories: CategoriesSection::default(),
             deployments: DeploymentsSection::default(),
+            binaries: BinariesSection::default(),
             vm: VmSection::default(),
             api: ApiSection::default(),
             telemetry: TelemetrySection::default(),
@@ -191,6 +194,24 @@ impl Default for DeploymentsSection {
         Self {
             storage_path: default_deployments_path(),
             default_push_port: default_push_port(),
+        }
+    }
+}
+
+/// `[binaries]` — host folder with versioned guest binaries + zw assets.
+/// Supervisors demand these on boot (version-gated) and on crash redemand.
+/// Portal uploads land here instantly; VMs pick them up on next demand.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinariesSection {
+    /// Host dir, e.g. `../binaries` (relative to the wrapper cwd).
+    #[serde(default = "default_binaries_dir")]
+    pub dir: String,
+}
+
+impl Default for BinariesSection {
+    fn default() -> Self {
+        Self {
+            dir: default_binaries_dir(),
         }
     }
 }
@@ -443,6 +464,9 @@ fn default_categories_path() -> String {
 }
 fn default_deployments_path() -> String {
     "data/deployments".to_string()
+}
+fn default_binaries_dir() -> String {
+    "../binaries".to_string()
 }
 fn default_push_port() -> u16 {
     8091

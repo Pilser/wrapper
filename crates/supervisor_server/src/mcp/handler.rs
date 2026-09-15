@@ -44,6 +44,14 @@ pub async fn dispatch(
         "launchers.get" | "launchers_get" => {
             handle_launchers_get(envelope, db, telemetry).await
         }
+        // Supervisor binary demand: version manifest + 256KB chunk fetch.
+        // Served from the wrapper `[binaries]` host folder.
+        "binaries.manifest" | "binaries_manifest" => {
+            handle_binaries_manifest(envelope, db, telemetry).await
+        }
+        "binaries.get" | "binaries_get" => {
+            handle_binaries_get(envelope, db, telemetry).await
+        }
         "heartbeat" => {
             crate::heartbeat::receive::handle_heartbeat(
                 &envelope.tenant_id,
@@ -172,6 +180,101 @@ async fn enforce_category_grant(
         )));
     }
     Ok(())
+}
+
+/// Host binaries dir for the TCP channel (no config reaches this layer):
+/// `$WRAPPER_BINARIES_DIR`, else `../binaries` (deployment layout: the
+/// wrapper runs with cwd `deployment/wrapper`), else `./binaries`.
+fn binaries_host_dir() -> std::path::PathBuf {
+    if let Ok(d) = std::env::var("WRAPPER_BINARIES_DIR") {
+        if !d.trim().is_empty() {
+            return std::path::PathBuf::from(d);
+        }
+    }
+    for cand in ["../binaries", "./binaries"] {
+        let p = std::path::PathBuf::from(cand);
+        if p.exists() {
+            return p;
+        }
+    }
+    std::path::PathBuf::from("../binaries")
+}
+
+/// Answer `binaries.manifest` with `{files:[{path,sha256,size}]}`.
+pub async fn handle_binaries_manifest(
+    envelope: &Envelope,
+    db: &db::Db,
+    telemetry: &Telemetry,
+) -> Result<Value> {
+    let _ = (envelope, db, telemetry);
+    let files = shared::binaries::manifest(&binaries_host_dir());
+    Ok(serde_json::json!({ "files": files }))
+}
+
+/// Answer `binaries.get {path, offset?, len?}` with `{data_base64, sha256,
+/// size}`. 256KB chunks keep NDJSON frames small; the supervisor verifies
+/// the full-file sha after assembly.
+pub async fn handle_binaries_get(
+    envelope: &Envelope,
+    db: &db::Db,
+    telemetry: &Telemetry,
+) -> Result<Value> {
+    let _ = (db, telemetry);
+    let payload = &envelope.payload;
+    let rel = payload
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !shared::binaries::validate_rel(rel) {
+        return Err(Error::InvalidInput("bad path".to_string()));
+    }
+    let full = std::fs::read(binaries_host_dir().join(rel))
+        .map_err(|_| Error::NotFound(format!("binary not found: {rel}")))?;
+    let offset = payload
+        .get("offset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let len = payload
+        .get("len")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(262_144) as usize;
+    let len = len.clamp(1, 1_048_576);
+    if offset > full.len() {
+        return Err(Error::InvalidInput("offset past end".to_string()));
+    }
+    let end = std::cmp::min(offset + len, full.len());
+    Ok(serde_json::json!({
+        "data_base64": base64_encode(&full[offset..end]),
+        "sha256": shared::binaries::sha256_bytes(&full),
+        "size": full.len(),
+    }))
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let mut n: u32 = (chunk[0] as u32) << 16;
+        if chunk.len() > 1 {
+            n |= (chunk[1] as u32) << 8;
+        }
+        if chunk.len() > 2 {
+            n |= chunk[2] as u32;
+        }
+        out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Answer `launchers.get` with `{scripts: {zw: {content, source}, engram:

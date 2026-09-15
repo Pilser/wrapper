@@ -1712,6 +1712,72 @@ pub async fn launchers_delete(
     }
 }
 
+/// GET /api/admin/binaries -> {dir, files:[{path,sha256,size}]}.
+/// Version manifest of the host binaries folder supervisors demand from.
+pub async fn binaries_list(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let dir = std::path::PathBuf::from(&state.binaries_dir);
+    let files = shared::binaries::manifest(&dir);
+    json::ok(serde_json::json!({ "dir": dir.to_string_lossy(), "files": files }))
+}
+
+/// PUT /api/admin/binaries/file?path=<rel> with raw octet-stream body
+/// (200MB cap) -> {path, sha256, size}. Portal uploads land instantly in
+/// the configured binaries folder; VMs pick them up on next demand
+/// (boot / crash redemand / Kill). Atomic write (tmp + rename).
+pub async fn binaries_upload(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let rel = query_param(&req, "path");
+    if !shared::binaries::validate_rel(&rel) {
+        return json::bad_request("bad path (a-z 0-9 . _ - /, no .., max 128)");
+    }
+    use http_body_util::BodyExt;
+    let bytes = match req.into_body().collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return json::bad_request("unreadable body"),
+    };
+    const LIMIT: usize = 200 * 1024 * 1024;
+    if bytes.len() > LIMIT {
+        return json::bad_request("body too large (200MB cap)");
+    }
+    let dir = std::path::PathBuf::from(&state.binaries_dir);
+    let dst = dir.join(&rel);
+    if let Some(parent) = dst.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return json::internal();
+        }
+    }
+    let tmp = dst.with_extension("upload-tmp");
+    if std::fs::write(&tmp, &bytes).is_err() || std::fs::rename(&tmp, &dst).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return json::internal();
+    }
+    // Executables must stay executable for the guest (tmp umask may strip).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if rel == "zw" || rel == "engram" {
+            let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let entry = shared::binaries::BinaryEntry {
+        path: rel,
+        sha256: shared::binaries::sha256_bytes(&bytes),
+        size: bytes.len() as u64,
+    };
+    json::ok(serde_json::json!({ "path": entry.path, "sha256": entry.sha256, "size": entry.size }))
+}
+
 /// DELETE /api/admin/system-prompt?scope=&ref= -> {deleted: bool}.
 /// Removes an override row (falls back to the next precedence level).
 pub async fn system_prompt_delete(

@@ -44,6 +44,8 @@ pub struct AppState {
     pub snapshots_dir: String,
     /// Host directory with per-tenant data-disk images (<dir>/<tenant>.img).
     pub data_disks_dir: String,
+    /// Host directory with versioned guest binaries + zw assets.
+    pub binaries_dir: String,
     /// Host path of the default agent system prompt (config `[vm]`).
     pub system_prompt_host_path: String,
     /// Idle minutes before auto-sleep (config `[vm]`, 0 = disabled).
@@ -76,8 +78,10 @@ pub struct ServeParams {
     pub snapshots_dir: String,
     /// Host dir with per-tenant data-disk images (`<dir>/<tenant>.img`).
     pub data_disks_dir: String,
-    /// Host path of the default agent system prompt (`[vm]`
-    /// `system_prompt_host_path`).
+    /// Host dir with versioned guest binaries + zw assets (config
+    /// `[binaries]`). Portal uploads land here; supervisors demand them.
+    pub binaries_dir: String,
+    /// Host path of the default agent system prompt (config `[vm]`).
     pub system_prompt_host_path: String,
     pub idle_timeout_minutes: u64,
     /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
@@ -130,6 +134,7 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         disks_dir: p.disks_dir,
         snapshots_dir: p.snapshots_dir,
         data_disks_dir: p.data_disks_dir,
+        binaries_dir: p.binaries_dir,
         system_prompt_host_path: p.system_prompt_host_path,
         telemetry_dir: p.telemetry_dir,
     };
@@ -321,6 +326,12 @@ async fn dispatch(
         }
         ("DELETE", ["api", "admin", "launchers"]) => {
             admin::launchers_delete(state, req).await
+        }
+        ("GET", ["api", "admin", "binaries"]) => {
+            admin::binaries_list(state, req).await
+        }
+        ("PUT", ["api", "admin", "binaries", "file"]) => {
+            admin::binaries_upload(state, req).await
         }
         ("GET", ["api", "admin", "tenants", _, "disk"]) => {
             admin::tenant_disk_show(state, req).await

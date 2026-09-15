@@ -348,6 +348,7 @@ async fn async_main() -> anyhow::Result<()> {
         disks_dir,
         snapshots_dir,
         data_disks_dir,
+        binaries_dir: cfg.binaries.dir.clone(),
         system_prompt_host_path: cfg.vm.system_prompt_host_path.clone(),
         idle_timeout_minutes: cfg.vm.idle_timeout_minutes,
     };

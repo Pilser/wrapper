@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod binaries;
 pub mod error;
 pub mod plugin;
 pub mod types;

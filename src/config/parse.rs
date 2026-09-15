@@ -119,6 +119,7 @@ pub fn parse(text: &str) -> Result<Config> {
         "default_push_port",
         cfg.deployments.default_push_port,
     )?;
+    cfg.binaries.dir = str_val(&table, "binaries", "dir", cfg.binaries.dir)?;
     cfg.vm.idle_timeout_minutes = u64_val(
         &table,
         "vm",
