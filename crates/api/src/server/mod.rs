@@ -319,6 +319,9 @@ async fn dispatch(
         ("PUT", ["api", "admin", "launchers"]) => {
             admin::launchers_set(state, req).await
         }
+        ("DELETE", ["api", "admin", "launchers"]) => {
+            admin::launchers_delete(state, req).await
+        }
         ("GET", ["api", "admin", "tenants", _, "disk"]) => {
             admin::tenant_disk_show(state, req).await
         }

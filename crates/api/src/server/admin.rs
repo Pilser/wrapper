@@ -1659,6 +1659,59 @@ pub async fn launchers_set(
     }
 }
 
+/// DELETE /api/admin/launchers?scope=&ref=&name= -> {deleted: bool}.
+/// Removes a launcher override row (falls back to the next precedence
+/// level). Scope/ref from query or JSON body; name must be zw|engram.
+pub async fn launchers_delete(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let (mut scope, mut ref_id, mut name) = (
+        query_param(&req, "scope"),
+        query_param(&req, "ref"),
+        query_param(&req, "name"),
+    );
+    if scope.is_empty() {
+        if let Ok(body) = json::read_json(req).await {
+            scope = body
+                .get("scope")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            ref_id = body
+                .get("ref")
+                .and_then(|v| v.as_str())
+                .or_else(|| body.get("ref_id").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            name = body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        }
+    }
+    if !["global", "category", "tenant"].contains(&scope.as_str()) {
+        return json::bad_request("scope must be global|category|tenant");
+    }
+    if !db::global::launchers::NAMES.contains(&name.as_str()) {
+        return json::bad_request("name must be zw|engram");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    match conn
+        .execute(
+            "DELETE FROM launcher_scripts WHERE scope = ?1 AND ref_id = ?2 AND name = ?3",
+            (scope.as_str(), ref_id.as_str(), name.as_str()),
+        )
+        .await
+    {
+        Ok(n) => json::ok(serde_json::json!({"deleted": n > 0})),
+        Err(_) => json::internal(),
+    }
+}
+
 /// DELETE /api/admin/system-prompt?scope=&ref= -> {deleted: bool}.
 /// Removes an override row (falls back to the next precedence level).
 pub async fn system_prompt_delete(
