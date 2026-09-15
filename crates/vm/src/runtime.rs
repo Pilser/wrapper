@@ -646,9 +646,9 @@ impl VmRuntime {
         };
         let (state_path, mem_path) = self.snapshot_paths(tenant_id);
         if !state_path.exists() || !mem_path.exists() {
-            // Stale row, nothing to restore from: drop it for fresh boot.
-            let _ = db::global::networks::release_all(&conn, tenant_id).await;
-            let _ = self.ip_pool.release(tenant_id).await;
+            // No snapshot to restore (e.g. after Kill): fall through to
+            // fresh boot, which REUSES the kept IP row. Never release here —
+            // tenant IPs are stable for the tenant's lifetime.
             return Ok(None);
         }
         // Recreate the identical host NIC, spawn, load + resume.
@@ -725,22 +725,36 @@ impl VmRuntime {
         let tenant = self.tenant(tenant_id).await?;
         let template = self.template_for_tenant(&tenant).await?;
 
-        // Drop any stale row (dark VM, no snapshot) so the new assignment
-        // is the only record. Also delete stale snapshots: they describe the
-        // dead VM (old IP/tenant state in RAM) and must never restore over
-        // this fresh boot.
-        if let Ok(conn) = self.db.conn() {
-            let _ = db::global::networks::release_all(&conn, tenant_id).await;
-        }
-        let _ = self.ip_pool.release(tenant_id).await;
+        // Reuse the kept IP reservation (kill keeps the row by design; only
+        // RAM snapshots go). Allocate from the pool only for tenants that
+        // never had an address. Tenant IPs are stable for life.
+        let kept_ip = if let Ok(conn) = self.db.conn() {
+            db::global::networks::all(&conn)
+                .await
+                .ok()
+                .and_then(|rows| {
+                    rows.into_iter()
+                        .find(|r| r.tenant_id == tenant_id)
+                        .map(|r| r.ip_address)
+                })
+        } else {
+            None
+        };
+        let ip = match kept_ip {
+            Some(ip) => {
+                // Pool is in-memory: re-mark after wrapper restarts.
+                self.ip_pool.mark_taken(tenant_id, &ip);
+                ip
+            }
+            None => self
+                .ip_pool
+                .allocate(tenant_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("IP pool exhausted"))?,
+        };
+        // Defensive: snapshots must never restore over a fresh boot (kill
+        // already deletes them; this covers races).
         let _ = self.delete_snapshots(tenant_id);
-
-        // 3. Assign an IP from the pool.
-        let ip = self
-            .ip_pool
-            .allocate(tenant_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("IP pool exhausted"))?;
 
         // 4. Host networking (needs root): bridge with gateway address,
         // tenant tap attached to the bridge, tap up, forwarding/NAT for
