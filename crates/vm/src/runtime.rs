@@ -314,10 +314,11 @@ impl VmRuntime {
         // Agent system prompt for zw (ZS_SYSTEM_PROMPT_FILE in the guest):
         // resolved tenant > category > global > host file, written to the
         // new-workdir location on the data disk.
+        let seed_tenant = tenant_id_from_image(&image);
         let (prompt, source) = resolve_system_prompt(
             &self.db,
             &self.host_system_prompt_path(),
-            tenant_id_from_image(&image),
+            &seed_tenant,
         )
         .await;
         if !prompt.is_empty() {
@@ -507,7 +508,7 @@ impl VmRuntime {
                     .level(telemetry::Level::Info)
                     .kind("vm.disk.prompt_synced")
                     .category("vm")
-                    .data("source", source)
+                    .data("source", source.clone())
                     .message(format!("synced SYSTEM.md ({source}) for tenant {tenant_id}"))
                     .emit();
             }

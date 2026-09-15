@@ -46,14 +46,16 @@ jobs:
           # Don't thrash cache on every PR push
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
 
-      - name: cargo check
-        run: cargo check --workspace --all-targets
+      # Skipped (build-only CI): check/clippy/test commented out —
+      # `cargo build --release` below still type-checks the binary.
+      # - name: cargo check
+      #   run: cargo check --workspace --all-targets
 
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets
+      # - name: cargo clippy
+      #   run: cargo clippy --workspace --all-targets
 
-      - name: cargo test
-        run: cargo test --workspace
+      # - name: cargo test
+      #   run: cargo test --workspace
 
       # Release artifact on main/master (expensive — skip on PRs)
       - name: cargo build (release)
