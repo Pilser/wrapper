@@ -6,6 +6,7 @@
 //! any staff row exists, so frontend onboarding is: bootstrap -> login ->
 //! create categories/templates -> create tenants.
 
+use http_body_util::Full;
 use shared::{Category, CategoryStatus, Tenant, TenantStatus, VmTemplate, VmTemplateStatus};
 
 use super::auth_ctx;
@@ -1750,7 +1751,7 @@ pub async fn supervisor_binaries_file(
         Ok(d) => d,
         Err(_) => return json::not_found("binary not found"),
     };
-    let mut res = hyper::Response::new(hyper::body::Full::new(hyper::body::Bytes::from(data)));
+    let mut res = hyper::Response::new(Full::new(hyper::body::Bytes::from(data)));
     *res.status_mut() = hyper::StatusCode::OK;
     res.headers_mut().insert(
         hyper::header::CONTENT_TYPE,
