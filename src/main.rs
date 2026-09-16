@@ -317,7 +317,16 @@ async fn async_main() -> anyhow::Result<()> {
     // frontend) with everything else proxied to the tenant's zw.
     // Runs as a background task; the event loop below still owns shutdown.
     let serve_bind = format!("{}:{}", cfg.wrapper.bind_address, cfg.wrapper.port);
-    let tenant_data_root = cfg.docker.tenant_data_root.clone();
+    // Absolute: docker bind sources must be absolute paths (the daemon
+    // rejects relative ones). Resolved against the wrapper cwd.
+    let tenant_data_root = std::path::Path::new(&cfg.docker.tenant_data_root)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| {
+            std::env::current_dir()
+                .map(|c| c.join(&cfg.docker.tenant_data_root).to_string_lossy().to_string())
+                .unwrap_or_else(|_| cfg.docker.tenant_data_root.clone())
+        });
     let _ = std::fs::create_dir_all(&tenant_data_root);
     let telemetry_dir = std::path::Path::new(&cfg.telemetry.disk.path)
         .canonicalize()
