@@ -38,12 +38,8 @@ pub struct AppState {
     pub public_base: String,
     /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
     pub telemetry_dir: String,
-    /// Host directory scanned by GET /api/admin/disks (guest images).
-    pub disks_dir: String,
-    /// Host directory for per-tenant snapshots (<dir>/<tenant>/{vmstate,mem}).
-    pub snapshots_dir: String,
-    /// Host directory with per-tenant data-disk images (<dir>/<tenant>.img).
-    pub data_disks_dir: String,
+    /// Host root holding one folder per tenant (bind-mounted at `/data`).
+    pub tenant_data_root: String,
     /// Host directory with versioned guest binaries + zw assets.
     pub binaries_dir: String,
     /// Host path of the default agent system prompt (config `[vm]`).
@@ -69,15 +65,14 @@ pub struct ServeParams {
     pub telemetry: Telemetry,
     /// Shared with the supervisor TCP listener: heartbeats feed the same map.
     pub activity: ActivityMap,
-    pub firecracker_bin: String,
     pub net_cfg: shared::NetworkConfig,
-    pub kernel_path: String,
-    pub initrd_path: String,
+    pub docker_image: String,
+    pub docker_network: String,
+    pub docker_subnet: String,
+    pub docker_gateway: String,
     pub public_base: String,
-    pub disks_dir: String,
-    pub snapshots_dir: String,
-    /// Host dir with per-tenant data-disk images (`<dir>/<tenant>.img`).
-    pub data_disks_dir: String,
+    /// Host root holding one folder per tenant (bind-mounted at `/data`).
+    pub tenant_data_root: String,
     /// Host dir with versioned guest binaries + zw assets (config
     /// `[binaries]`). Portal uploads land here; supervisors demand them.
     pub binaries_dir: String,
@@ -92,16 +87,19 @@ pub struct ServeParams {
 /// else through the zw reverse proxy. Spawns the idle reaper when the
 /// timeout is non-zero.
 pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
+    let docker =
+        vm::docker::DockerDriver::connect(&p.docker_image, &p.docker_network)
+            .map_err(|e| anyhow::anyhow!("docker unavailable: {e}"))?;
     let runtime = vm::runtime::VmRuntime::new(
-        expand_home(&p.firecracker_bin),
+        docker,
         p.gdb.clone(),
         p.net_cfg,
         p.telemetry.clone(),
-        expand_home(&p.kernel_path),
-        expand_home(&p.initrd_path),
+        p.docker_network.clone(),
+        p.docker_subnet.clone(),
+        p.docker_gateway.clone(),
+        p.tenant_data_root.clone(),
     )?
-    .with_snapshots_dir(p.snapshots_dir.clone())
-    .with_data_disks_dir(p.data_disks_dir.clone())
     .with_system_prompt_host_path(p.system_prompt_host_path.clone());
     let activity = p.activity.clone();
     // Restart recovery BEFORE the runtime moves into handler/state: never
@@ -132,8 +130,7 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         public_base: p.public_base,
         idle_timeout_minutes: p.idle_timeout_minutes,
         disks_dir: p.disks_dir,
-        snapshots_dir: p.snapshots_dir,
-        data_disks_dir: p.data_disks_dir,
+        tenant_data_root: p.tenant_data_root,
         binaries_dir: p.binaries_dir,
         system_prompt_host_path: p.system_prompt_host_path,
         telemetry_dir: p.telemetry_dir,
@@ -204,16 +201,6 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
                 .await;
         });
     }
-}
-
-/// Expand a leading `~/` with $HOME (config paths like the firecracker bin).
-fn expand_home(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return format!("{home}/{rest}");
-        }
-    }
-    path.to_string()
 }
 
 pub type ApiResponse = hyper::Response<Full<Bytes>>;

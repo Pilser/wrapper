@@ -56,7 +56,7 @@ pub async fn snapshot(state: &AppState, tenant_id: &str) -> serde_json::Value {
         }
         None => (None, None),
     };
-    // VM reservation row (ip/tap) + fc socket mtime as boot approximation.
+    // Container reservation row (ip + container name in the tap column).
     let (ip, tap): (Option<String>, Option<String>) = match &conn {
         Some(c) => db::global::networks::all(c)
             .await
@@ -69,17 +69,14 @@ pub async fn snapshot(state: &AppState, tenant_id: &str) -> serde_json::Value {
             .unwrap_or((None, None)),
         None => (None, None),
     };
-    let socket_mtime = std::fs::metadata(format!("/tmp/fc_{tenant_id}.sock"))
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.elapsed().ok().map(|d| d.as_secs()));
+    let socket_mtime: Option<u64> = None;
     let heartbeat_age = state
         .activity
         .last(tenant_id)
         .map(|t| t.elapsed().as_secs());
     // Live memory pressure from the balloon device (if the guest kernel
     // has virtio_balloon; else null and the UI shows allocated memory).
-    let balloon = balloon_stats(tenant_id).await;
+    let balloon = balloon_stats(state, tenant_id).await;
     // Data-disk size (pure stat, no fork — null when no image exists yet).
     let disk_bytes: Option<u64> = match &state.runtime {
         Some(r) => r.disk_size_bytes(tenant_id),
@@ -108,21 +105,20 @@ pub async fn snapshot(state: &AppState, tenant_id: &str) -> serde_json::Value {
     })
 }
 
-/// Best-effort balloon stats for one tenant (2s cap so a dead socket never
-/// stalls the dashboard tick). Returns the raw stats object or null.
-async fn balloon_stats(tenant_id: &str) -> serde_json::Value {
-    let path = vm::runtime::fc_socket_path(tenant_id);
-    if !path.exists() {
-        return serde_json::Value::Null;
-    }
-    let client = vm::FirecrackerClient::new(path.to_string_lossy().to_string());
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        client.get("/balloon/stats"),
-    )
-    .await
-    {
-        Ok(Ok(v)) => v,
+/// Best-effort per-container resource stats for one tenant (docker stats
+/// one-shot). Returns `{actual_mb, limit_mb, cpu_percent}` or null. Keeps
+/// the `balloon` key so the dashboard keeps rendering.
+async fn balloon_stats(state: &AppState, tenant_id: &str) -> serde_json::Value {
+    let fut = async {
+        let r = state.runtime.as_ref()?;
+        r.container_stats(tenant_id).await
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(4), fut).await {
+        Ok(Some(s)) => serde_json::json!({
+            "actual_mb": s.mem_used_bytes as f64 / 1024.0 / 1024.0,
+            "limit_mb": s.mem_limit_bytes as f64 / 1024.0 / 1024.0,
+            "cpu_percent": (s.cpu_percent * 10.0).round() / 10.0,
+        }),
         _ => serde_json::Value::Null,
     }
 }

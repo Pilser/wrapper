@@ -14,7 +14,7 @@ pub struct Config {
     #[serde(default)]
     pub wrapper: WrapperSection,
     #[serde(default)]
-    pub firecracker: FirecrackerSection,
+    pub docker: DockerSection,
     #[serde(default)]
     pub network: NetworkSection,
     #[serde(default)]
@@ -41,7 +41,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             wrapper: WrapperSection::default(),
-            firecracker: FirecrackerSection::default(),
+            docker: DockerSection::default(),
             network: NetworkSection::default(),
             database: DatabaseSection::default(),
             supervisor_server: SupervisorSection::default(),
@@ -74,23 +74,31 @@ impl Default for WrapperSection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FirecrackerSection {
-    #[serde(default = "default_fc_binary")]
-    pub binary_path: String,
-    /// Host path to the guest kernel (also the VmRuntime default).
-    #[serde(default = "default_kernel_path")]
-    pub kernel_path: String,
-    /// Host path to the guest initramfs (also the VmRuntime default).
-    #[serde(default = "default_initrd_path")]
-    pub initrd_path: String,
+pub struct DockerSection {
+    /// Tenant image every container runs (`jerboa-tenant:latest`).
+    #[serde(default = "default_docker_image")]
+    pub image: String,
+    /// Bridge network tenants attach to (stable IPs for life).
+    #[serde(default = "default_docker_network")]
+    pub network: String,
+    /// Subnet + gateway for the tenant bridge.
+    #[serde(default = "default_docker_subnet")]
+    pub subnet: String,
+    #[serde(default = "default_docker_gateway")]
+    pub gateway: String,
+    /// Host root holding one folder per tenant (bind-mounted at `/data`).
+    #[serde(default = "default_tenant_data_root")]
+    pub tenant_data_root: String,
 }
 
-impl Default for FirecrackerSection {
+impl Default for DockerSection {
     fn default() -> Self {
         Self {
-            binary_path: default_fc_binary(),
-            kernel_path: default_kernel_path(),
-            initrd_path: default_initrd_path(),
+            image: default_docker_image(),
+            network: default_docker_network(),
+            subnet: default_docker_subnet(),
+            gateway: default_docker_gateway(),
+            tenant_data_root: default_tenant_data_root(),
         }
     }
 }
@@ -420,14 +428,20 @@ fn default_bind() -> String {
 fn default_wrapper_port() -> u16 {
     8080
 }
-fn default_fc_binary() -> String {
-    "~/.local/bin/firecracker".to_string()
+fn default_docker_image() -> String {
+    "jerboa-tenant:latest".to_string()
 }
-fn default_kernel_path() -> String {
-    "../disks/vmlinux.bin".to_string()
+fn default_docker_network() -> String {
+    "jerboa-tenants".to_string()
 }
-fn default_initrd_path() -> String {
-    "../disks/initramfs.cpio.gz".to_string()
+fn default_docker_subnet() -> String {
+    "172.16.0.0/24".to_string()
+}
+fn default_docker_gateway() -> String {
+    "172.16.0.1".to_string()
+}
+fn default_tenant_data_root() -> String {
+    "data/tenant-data".to_string()
 }
 fn default_idle_timeout() -> u64 {
     30

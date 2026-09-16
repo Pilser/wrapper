@@ -1,16 +1,13 @@
-//! `vm` — Firecracker VM lifecycle management and templates.
+//! `vm` — Docker tenant lifecycle management and templates.
 
-pub mod firecracker;
+pub mod docker;
 pub mod idle;
-pub mod lifecycle;
-pub mod manager;
 pub mod resources;
 pub mod runtime;
 pub mod templates;
 
-pub use firecracker::FirecrackerClient;
+pub use docker::{ContainerStats, DockerDriver};
 pub use idle::{IdleAction, IdleTracker};
-pub use manager::{VmManager, VmRegistry};
 pub use runtime::{VmRuntime, ZERO_WRAPPER_PORT};
 pub use templates::{TemplateRegistry, VmTemplateBuilder};
 

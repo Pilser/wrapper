@@ -53,23 +53,15 @@ pub fn parse(text: &str) -> Result<Config> {
     let mut cfg = Config::default();
     cfg.wrapper.bind_address = str_val(&table, "wrapper", "bind_address", cfg.wrapper.bind_address)?;
     cfg.wrapper.port = u16_val(&table, "wrapper", "port", cfg.wrapper.port)?;
-    cfg.firecracker.binary_path = str_val(
+    cfg.docker.image = str_val(&table, "docker", "image", cfg.docker.image)?;
+    cfg.docker.network = str_val(&table, "docker", "network", cfg.docker.network)?;
+    cfg.docker.subnet = str_val(&table, "docker", "subnet", cfg.docker.subnet)?;
+    cfg.docker.gateway = str_val(&table, "docker", "gateway", cfg.docker.gateway)?;
+    cfg.docker.tenant_data_root = str_val(
         &table,
-        "firecracker",
-        "binary_path",
-        cfg.firecracker.binary_path,
-    )?;
-    cfg.firecracker.kernel_path = str_val(
-        &table,
-        "firecracker",
-        "kernel_path",
-        cfg.firecracker.kernel_path,
-    )?;
-    cfg.firecracker.initrd_path = str_val(
-        &table,
-        "firecracker",
-        "initrd_path",
-        cfg.firecracker.initrd_path,
+        "docker",
+        "tenant_data_root",
+        cfg.docker.tenant_data_root,
     )?;
     cfg.network.ip_range = str_val(&table, "network", "ip_range", cfg.network.ip_range)?;
     cfg.network.gateway = str_val(&table, "network", "gateway", cfg.network.gateway)?;

@@ -304,7 +304,7 @@ pub async fn tenants_delete(
     let id = json::last_seg(&req);
     let _ = idle::shutdown_tenant(state, &id).await;
     if let Some(runtime) = &state.runtime {
-        let _ = runtime.delete_snapshots(&id);
+        let _ = runtime.remove_tenant(&id);
     }
     let conn = match state.gdb.conn() {
         Ok(c) => c,
@@ -1114,6 +1114,22 @@ pub async fn vms_list(
         Err(_) => return json::internal(),
     };
     let tenants = db::global::tenants::list(&conn).await.unwrap_or_default();
+    // Per-container usage, best-effort (missing container -> null stats).
+    let mut stats = std::collections::HashMap::new();
+    if let Some(runtime) = &state.runtime {
+        for r in &rows {
+            if let Some(s) = runtime.container_stats(&r.tenant_id).await {
+                stats.insert(
+                    r.tenant_id.clone(),
+                    serde_json::json!({
+                        "cpu_percent": (s.cpu_percent * 10.0).round() / 10.0,
+                        "mem_used_bytes": s.mem_used_bytes,
+                        "mem_limit_bytes": s.mem_limit_bytes,
+                    }),
+                );
+            }
+        }
+    }
     let vms: Vec<_> = rows
         .iter()
         .map(|r| {
@@ -1124,6 +1140,7 @@ pub async fn vms_list(
                 "ip": r.ip_address,
                 "tap": r.tap_device,
                 "status": t.map(|t| t.status.as_str()),
+                "stats": stats.get(&r.tenant_id).cloned().unwrap_or(serde_json::Value::Null),
             })
         })
         .collect();
@@ -1158,9 +1175,9 @@ pub async fn vms_sleep(
 }
 
 /// POST /api/admin/vms/{tenant_id}/stop -> {ok, status}.
-/// STOP: verified kill only — no new snapshot, existing snapshots kept.
-/// Next wake restores if a snapshot exists, else fresh-boots. The VM is
-/// simply off; nothing is wiped.
+/// STOP: `docker stop` the container (SIGTERM). Container, data folder, IP
+/// row all kept — only RAM state goes. Next wake recreates fresh on the
+/// same IP. The container is simply off; nothing is wiped.
 pub async fn vms_stop(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -1169,18 +1186,29 @@ pub async fn vms_stop(
         return e;
     }
     let tenant_id = json::second_last_seg(&req);
-    let sock_pattern = format!("/tmp/fc_{tenant_id}.sock");
-    vm::runtime::kill_process_pattern(&sock_pattern).await;
+    if let Some(runtime) = &state.runtime {
+        runtime.kill_vm_process(&tenant_id).await;
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    let _ = db::global::tenants::set_status(
+        &conn,
+        &tenant_id,
+        shared::TenantStatus::Asleep.as_str(),
+    )
+    .await;
     state.activity.remove(&tenant_id);
     json::ok(serde_json::json!({"ok": true, "status": "asleep", "mode": "stop"}))
 }
 
 /// POST /api/admin/vms/{tenant_id}/kill -> {ok, status}.
-/// KILL: verified kill + snapshots deleted. IP row, tap and DATA DISK are
-/// KEPT — only RAM state goes. Next wake FRESH-BOOTS on the same IP (new
-/// image, disk prompt re-seeded). Use after image changes, boot-config
-/// changes, or a wedged guest. This is the button that guarantees the VM
-/// starts from down, never from a snapshot.
+/// KILL: container removed (`rm`), data folder + IP row KEPT — only the
+/// container (and its RAM) goes. Next wake recreates fresh on the same IP
+/// (new image generation, prompt + binaries re-demanded). Use after image
+/// changes or a wedged guest. This is the button that guarantees the tenant
+/// starts from down, never resumed.
 pub async fn vms_kill(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -1189,10 +1217,8 @@ pub async fn vms_kill(
         return e;
     }
     let tenant_id = json::second_last_seg(&req);
-    let sock_pattern = format!("/tmp/fc_{tenant_id}.sock");
-    vm::runtime::kill_process_pattern(&sock_pattern).await;
     if let Some(runtime) = &state.runtime {
-        let _ = runtime.delete_snapshots(&tenant_id);
+        runtime.destroy_container(&tenant_id).await;
     }
     let conn = match state.gdb.conn() {
         Ok(c) => c,
@@ -1210,8 +1236,7 @@ pub async fn vms_kill(
 
 // ------------------------------------------------------- tenant data disk
 /// GET /api/admin/tenants/{id}/disk -> {exists,size_bytes,size_gb,used_bytes}:
-/// the tenant's persistent data-disk image (`<disks>/<tenant>.img`).
-/// `used_bytes` is sparse-aware host usage (null when unknown).
+/// the tenant's persistent data folder (bind-mounted at `/data`).
 pub async fn tenant_disk_show(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -1235,15 +1260,9 @@ pub async fn tenant_disk_show(
     }))
 }
 
-/// POST /api/admin/tenants/{id}/disk/resize {size_gb} -> grow offline.
-///
-/// Grow-only, capped at 64 GiB. The VM is killed first when live (offline
-/// resize is the only corruption-safe kind: a live guest caches filesystem
-/// metadata). Disk bytes are never at risk (`truncate` appends, `e2fsck`
-/// then `resize2fs`); in-flight RAM state is not preserved — same as any
-/// reboot. Sleep snapshots are invalidated by the geometry change, so a
-/// re-wake fresh-boots (disk data intact). Re-wakes automatically when the
-/// VM was live; otherwise it stays asleep until next use.
+/// POST /api/admin/tenants/{id}/disk/resize {size_gb} -> always 400.
+/// Container volumes share host disk: there is nothing to resize. Kept as
+/// an explicit error so callers learn it instead of silently succeeding.
 pub async fn tenant_disk_resize(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -1261,54 +1280,18 @@ pub async fn tenant_disk_resize(
         Some(n) => n,
         None => return json::bad_request("size_gb required (integer GiB, grow-only)"),
     };
-    let runtime = match &state.runtime {
-        Some(r) => r.clone(),
-        None => return json::unavailable("vm runtime not configured"),
-    };
-    let was_live = vm::runtime::fc_socket_path(&tenant_id).exists();
-    if was_live {
-        runtime.kill_vm_process(&tenant_id).await;
-    }
-    match runtime.resize_data_disk(&tenant_id, size_gb).await {
-        Ok(now_bytes) => {
-            let ip = if was_live {
-                state.activity.touch(&tenant_id);
-                runtime
-                    .ensure_running(&tenant_id)
-                    .await
-                    .ok()
-                    .and_then(|a| a.split(':').next().map(str::to_string))
-            } else {
-                None
-            };
-            json::ok(serde_json::json!({
-                "tenant_id": tenant_id,
-                "size_gb": size_gb,
-                "size_bytes": now_bytes,
-                "re_waked": ip.is_some(),
-                "ip": ip,
-            }))
-        }
-        Err(e) => {
-            // Restore service when we took it down: best-effort re-wake so
-            // a failed resize never strands a tenant dark.
-            if was_live {
-                state.activity.touch(&tenant_id);
-                let _ = runtime.ensure_running(&tenant_id).await;
-            }
-            json::json(
-                hyper::StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "disk resize failed", "detail": e.to_string()}),
-            )
-        }
-    }
+    // Container volumes share host disk: nothing to resize. Kept as a
+    // clear error (not a silent success) so the dashboard Expand button
+    // explains itself instead of pretending.
+    let _ = (state, tenant_id, size_gb);
+    json::bad_request("container volumes share host disk and are not resizable")
 }
 
 /// POST /api/admin/workspace/sync {tenant_id} -> {written, re_waked}.
 /// Pushes the resolved agent system prompt (SYSTEM.md) into the tenant's
-/// data disk via offline loop mount (`.bak-date` backup). Kills the VM
-/// first when live, re-wakes when it was live so zw picks the prompt up.
-/// Works for SLEEPING VMs too (disk image on host, no VM needed).
+/// data folder (`.bak-date` backup). Plain host write — works whether the
+/// container runs or not. Restarts a live container so zw picks the prompt
+/// up. Works for SLEEPING tenants too (folder on host, no container needed).
 pub async fn workspace_sync(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -1329,14 +1312,12 @@ pub async fn workspace_sync(
         Some(r) => r.clone(),
         None => return json::unavailable("vm runtime not configured"),
     };
-    let was_live = vm::runtime::fc_socket_path(&tenant_id).exists();
-    if was_live {
-        runtime.kill_vm_process(&tenant_id).await;
-    }
+    let was_live = runtime.is_container_live(&tenant_id).await;
     match runtime.sync_workspace_seed(&tenant_id, force).await {
         Ok(written) => {
             let ip = if was_live {
                 state.activity.touch(&tenant_id);
+                runtime.restart_container(&tenant_id).await;
                 runtime
                     .ensure_running(&tenant_id)
                     .await
@@ -1416,14 +1397,12 @@ pub async fn workspace_sync_bulk(
     };
     let mut results = Vec::new();
     for tid in tenant_ids {
-        let was_live = vm::runtime::fc_socket_path(&tid).exists();
-        if was_live {
-            runtime.kill_vm_process(&tid).await;
-        }
+        let was_live = runtime.is_container_live(&tid).await;
         match runtime.sync_workspace_seed(&tid, force).await {
             Ok(written) => {
                 let ip = if was_live {
                     state.activity.touch(&tid);
+                    runtime.restart_container(&tid).await;
                     runtime
                         .ensure_running(&tid)
                         .await
@@ -1472,7 +1451,7 @@ fn host_prompt_path(state: &AppState) -> std::path::PathBuf {
         Some(r) => r.host_system_prompt_path(),
         None => vm::runtime::host_system_prompt_path_for(
             &state.system_prompt_host_path,
-            &state.data_disks_dir,
+            &state.tenant_data_root,
         ),
     }
 }
@@ -1831,14 +1810,14 @@ async fn binaries_push_one(
     runtime: &vm::runtime::VmRuntime,
     tenant_id: &str,
 ) -> serde_json::Value {
-    let was_live = vm::runtime::fc_socket_path(tenant_id).exists();
-    if was_live {
-        runtime.kill_vm_process(tenant_id).await;
-    }
+    // Plain host delete — the container may keep running. Restart when live
+    // so the fresh boot re-demands immediately.
+    let was_live = runtime.is_container_live(tenant_id).await;
     match runtime.drop_binaries_versions(tenant_id).await {
         Ok(stamp_dropped) => {
             let ip = if was_live {
                 state.activity.touch(tenant_id);
+                runtime.restart_container(tenant_id).await;
                 runtime
                     .ensure_running(tenant_id)
                     .await
@@ -1891,7 +1870,7 @@ pub async fn binaries_push(
 }
 
 /// POST /api/admin/binaries/push-bulk {tenant_ids?[], category_id?, all?}
-/// -> {results:[...]}. Sequential (loop mounts contend if parallel).
+/// -> {results:[...]}. Sequential (one tenant at a time).
 pub async fn binaries_push_bulk(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -2005,9 +1984,9 @@ pub async fn system_prompt_effective(
 }
 
 // --------------------------------------------------------------------- disks
-/// GET /api/admin/disks -> {disks:[{name,path,size_bytes}]}: guest images
-/// (kernels, initramfs) present on the host. Admin picks these paths when
-/// creating templates.
+/// GET /api/admin/disks -> {disks:[{name,path,size_bytes}]}: per-tenant
+/// data folders under the tenant data root (bind-mounted at `/data`).
+/// Replaces the old guest-image picker (kernels are gone with Firecracker).
 pub async fn disks_list(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
@@ -2015,7 +1994,7 @@ pub async fn disks_list(
     if let Err(e) = auth_ctx::require_admin(state, &req).await {
         return e;
     }
-    let dir = state.disks_dir.clone();
+    let dir = state.tenant_data_root.clone();
     let mut out = Vec::new();
     let entries = std::fs::read_dir(&dir).map_err(|_| json::internal());
     let entries = match entries {
@@ -2024,16 +2003,14 @@ pub async fn disks_list(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let is_image = name.ends_with(".bin")
-            || name.ends_with(".gz")
-            || name.ends_with(".cpio")
-            || name.ends_with(".ext4")
-            || name.ends_with(".img");
-        if !is_image || !path.is_file() {
+        if !path.is_dir() {
             continue;
         }
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let name = entry.file_name().to_string_lossy().to_string();
+        let size = match &state.runtime {
+            Some(r) => r.disk_size_bytes(&name).unwrap_or(0),
+            None => 0,
+        };
         out.push(serde_json::json!({
             "name": name,
             "path": path.to_string_lossy(),

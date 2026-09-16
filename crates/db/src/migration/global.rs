@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS category_tools (
 -- scope is 'global' (ref_id ''), 'category' (ref_id category_id) or
 -- 'tenant' (ref_id tenant_id). Edited from the admin portal, distributed
 -- to tenant disks at /data/zerowrapper/workspace/SYSTEM.md via the
--- workspace sync endpoints (same offline loop-mount path as seed files).
+-- workspace sync endpoints (plain host writes into the tenant data dir).
 CREATE TABLE IF NOT EXISTS system_prompts (
     scope TEXT NOT NULL, ref_id TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL, updated_at TEXT NOT NULL,

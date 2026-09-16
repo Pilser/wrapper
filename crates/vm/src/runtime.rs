@@ -1,42 +1,30 @@
-//! Wake-on-request runtime: ensure a tenant's VM is running.
+//! Wake-on-request runtime: ensure a tenant's container is running.
 //!
 //! `VmRuntime::ensure_running(tenant_id)` is the single entry point the proxy
-//! calls before forwarding a request. It returns the VM's `IP:port` (the
+//! calls before forwarding a request. It returns the tenant's `IP:port` (the
 //! zerowrapper port):
-//! * recorded VM answers TCP -> return it (hot path);
-//! * recorded but dark + snapshot on disk -> RESTORE it (~0.2 s, same IP);
-//! * otherwise -> fresh boot (~9 s), snapshot taken later at idle sleep.
+//! * recorded container answers TCP -> return it (hot path);
+//! * recorded but paused -> UNPAUSE it (instant, RAM kept);
+//! * otherwise -> create + start (~0.5 s).
 //!
-//! Snapshots live in `<snapshots_dir>/<tenant_id>/{vmstate,mem}` (host disk,
-//! ~512 MB per sleeping tenant = guest RAM size). The tap name and MAC are
-//! deterministic per tenant, so a restore reattaches the identical NIC the
-//! snapshot was taken with.
+//! One container per tenant (`zw-<tenant-id>`) on the tenant bridge, stable
+//! IP for life, tenant data in a host folder bind-mounted at `/data`. Sleep
+//! = `pause`, Stop = `stop`, Kill = `rm` + recreate. No KVM anywhere.
 
 use shared::{NetworkConfig, Tenant, TenantStatus, VmTemplate};
 use telemetry::Telemetry;
 
-use crate::firecracker::FirecrackerClient;
-use crate::firecracker::network::{gateway_for_ip, guest_mac_for_tenant, tap_name_for_tenant};
-use crate::lifecycle::boot::NetAttach;
-use crate::manager::VmManager;
+use crate::docker::{ContainerStats, DockerDriver};
 
 // Network helpers live in the `network` crate; re-exported here for convenience.
 use network::ip::IpPool;
-use network::tap::{self, TapCreateOptions};
 
-/// Host bridge all tenant taps attach to. Holds the gateway address.
-const BRIDGE_NAME: &str = "br0";
-
-/// The port the zerowrapper listens on inside every VM.
+/// The port the zerowrapper listens on inside every tenant container.
 pub const ZERO_WRAPPER_PORT: u16 = 9092;
 
 /// Default memory (MiB) and vCPU used when a template does not specify them.
 const DEFAULT_MEM_MIB: u32 = 512;
 const DEFAULT_VCPU: u32 = 2;
-
-/// Default per-tenant data-disk size (GiB, sparse — host pays only written
-/// blocks). Raised per tenant later via the admin resize action.
-pub const DEFAULT_DATA_DISK_GB: u64 = 2;
 
 /// Host path of the default agent system prompt without a runtime handle
 /// (admin handlers in degraded mode). `configured` wins (wrapper `[vm]`
@@ -45,12 +33,12 @@ pub const DEFAULT_DATA_DISK_GB: u64 = 2;
 /// returns empty when nothing resolves.
 pub fn host_system_prompt_path_for(
     configured: &str,
-    data_disks_dir: &str,
+    tenant_data_root: &str,
 ) -> std::path::PathBuf {
     if !configured.trim().is_empty() {
         return std::path::PathBuf::from(configured);
     }
-    if let Ok(canon) = std::path::Path::new(data_disks_dir).canonicalize() {
+    if let Ok(canon) = std::path::Path::new(tenant_data_root).canonicalize() {
         if let Some(deployment) = canon.parent().and_then(|a| a.parent()) {
             let p = deployment.join("zerowrapper-mono/SYSTEM.md");
             if p.exists() {
@@ -61,13 +49,26 @@ pub fn host_system_prompt_path_for(
     std::path::PathBuf::new()
 }
 
-/// Tenant id from a data-disk image path (`<tenant_id>.img`).
-fn tenant_id_from_image(image: &std::path::Path) -> String {
-    image
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string()
+
+
+/// Recursive byte size of a host folder (tenant data usage).
+fn dir_size_bytes(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(m) = e.metadata() {
+                total = total.saturating_add(m.len());
+            }
+        }
+    }
+    total
 }
 
 /// Resolve the effective agent system prompt for a tenant:
@@ -96,21 +97,20 @@ pub async fn resolve_system_prompt(
     (content, "host-file".to_string())
 }
 
-/// Hard cap for data-disk resizes (GiB). Grow-only; shrinking is refused.
-pub const MAX_DATA_DISK_GB: u64 = 64;
-
 #[derive(Clone)]
 pub struct VmRuntime {
-    vm_manager: VmManager,
+    docker: DockerDriver,
     ip_pool: IpPool,
     db: db::global::GlobalDb,
     telemetry: Telemetry,
-    kernel_path: String,
-    initrd_path: String,
-    snapshots_dir: String,
-    data_disks_dir: String,
+    /// Docker bridge network tenants attach to (stable IPs for life).
+    network: String,
+    subnet: String,
+    gateway: String,
+    /// Host root holding one folder per tenant, bind-mounted at `/data`.
+    tenant_data_root: String,
     /// Configured host path of the default agent system prompt (`[vm]`
-    /// `system_prompt_host_path`). Empty = probe relative to the disks dir.
+    /// `system_prompt_host_path`). Empty = probe relative to the data root.
     system_prompt_host_path: String,
     /// Per-tenant boot mutex: concurrent `ensure_running` for the same tenant
     /// must serialize (otherwise two fresh_boots race on `networks.id` and the
@@ -121,36 +121,32 @@ pub struct VmRuntime {
 
 impl VmRuntime {
     pub fn new(
-        firecracker_bin: impl Into<String>,
+        docker: DockerDriver,
         db: db::global::GlobalDb,
         net_cfg: NetworkConfig,
         telemetry: Telemetry,
-        kernel_path: impl Into<String>,
-        initrd_path: impl Into<String>,
+        network: impl Into<String>,
+        subnet: impl Into<String>,
+        gateway: impl Into<String>,
+        tenant_data_root: impl Into<String>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            vm_manager: VmManager::with_telemetry(firecracker_bin, telemetry.clone()),
+            docker,
             ip_pool: IpPool::with_telemetry(net_cfg, telemetry.clone()),
             db,
             telemetry,
-            kernel_path: kernel_path.into(),
-            initrd_path: initrd_path.into(),
-            snapshots_dir: "data/snapshots".to_string(),
-            data_disks_dir: "data/disks".to_string(),
+            network: network.into(),
+            subnet: subnet.into(),
+            gateway: gateway.into(),
+            tenant_data_root: tenant_data_root.into(),
             system_prompt_host_path: String::new(),
             boot_locks: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         })
     }
 
-    /// Directory holding per-tenant snapshots (`<dir>/<tenant>/{vmstate,mem}`).
-    pub fn with_snapshots_dir(mut self, dir: impl Into<String>) -> Self {
-        self.snapshots_dir = dir.into();
-        self
-    }
-
-    /// Directory holding per-tenant data-disk images (`<dir>/<tenant>.img`).
-    pub fn with_data_disks_dir(mut self, dir: impl Into<String>) -> Self {
-        self.data_disks_dir = dir.into();
+    /// Host root holding one folder per tenant (bind-mounted at `/data`).
+    pub fn with_tenant_data_root(mut self, dir: impl Into<String>) -> Self {
+        self.tenant_data_root = dir.into();
         self
     }
 
@@ -161,157 +157,155 @@ impl VmRuntime {
         self
     }
 
-    /// Host path of a tenant's data-disk image. The tenant id is validated
-    /// to a safe charset so it can never escape the disks directory.
+    /// Host folder for a tenant's persistent data. The tenant id is validated
+    /// to a safe charset so it can never escape the data root.
     pub fn data_disk_path(&self, tenant_id: &str) -> anyhow::Result<std::path::PathBuf> {
         if tenant_id.is_empty()
             || !tenant_id
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            anyhow::bail!("invalid tenant id for disk path");
+            anyhow::bail!("invalid tenant id for data path");
         }
-        Ok(std::path::Path::new(&self.data_disks_dir).join(format!("{tenant_id}.img")))
+        Ok(std::path::Path::new(&self.tenant_data_root).join(tenant_id))
     }
 
-    /// Ensure the tenant's data disk exists (sparse `fallocate` + `mkfs.ext4`,
-    /// ~0.1 s for 2 GiB, paid once per tenant). Returns the image path.
-    /// Existing images are returned untouched — this never reformats.
+    /// Ensure the tenant's data folder exists (plain `mkdir`, instant; the
+    /// folder bind-mounts at `/data` in the container). Returns the path.
+    /// Existing folders are returned untouched.
     pub async fn ensure_data_disk(&self, tenant_id: &str) -> anyhow::Result<std::path::PathBuf> {
         let path = self.data_disk_path(tenant_id)?;
-        if path.exists() {
-            return Ok(path);
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let fallocate = tokio::process::Command::new("fallocate")
-            .args(["-l", &format!("{}G", DEFAULT_DATA_DISK_GB)])
-            .arg(&path)
-            .status()
-            .await?;
-        if !fallocate.success() {
-            anyhow::bail!("fallocate data disk failed");
-        }
-        let mkfs = tokio::process::Command::new("mkfs.ext4")
-            .args(["-q", "-E", "lazy_itable_init,lazy_journal_init", "-L", "zwdata"])
-            .arg(&path)
-            .status()
-            .await?;
-        if !mkfs.success() {
-            let _ = std::fs::remove_file(&path);
-            anyhow::bail!("mkfs.ext4 data disk failed");
-        }
-        // Seed the fresh filesystem with the agent system prompt
-        // (SYSTEM.md resolved tenant > category > global > host file).
-        // Best-effort: a seed failure never fails disk creation — the guest
-        // falls back to the baked /etc/supervisor/SYSTEM.md.
-        if let Err(e) = self.seed_workspace_on_image(&path).await {
-            self.telemetry
-                .builder()
-                .level(telemetry::Level::Warn)
-                .kind("vm.disk.seed_failed")
-                .category("vm")
-                .tenant_id(Some(tenant_id.to_string()))
-                .message(format!("workspace seed failed (disk valid, agent will lazy-create): {e}"))
-                .emit();
-        }
-        self.telemetry
-            .builder()
-            .level(telemetry::Level::Info)
-            .kind("vm.disk.created")
-            .category("vm")
-            .tenant_id(Some(tenant_id.to_string()))
-            .data("path", path.to_string_lossy().to_string())
-            .data("size_gb", DEFAULT_DATA_DISK_GB.to_string())
-            .message(format!("data disk created for tenant {tenant_id}"))
-            .emit();
-        Ok(path)
-    }
-
-    /// Host path of the default agent system prompt
-    /// (`deployment/zerowrapper-mono/SYSTEM.md`). Same layout probing as
-    /// `workspace_seed_dir`: derived from the disks dir, then the canonical
-    /// deployment path, then the absolute build-host fallback.
-    pub fn host_system_prompt_path(&self) -> std::path::PathBuf {
-        host_system_prompt_path_for(&self.system_prompt_host_path, &self.data_disks_dir)
-    }
-
-    /// Seed the agent system prompt into a freshly formatted image via loop
-    /// mount. Single managed file — no multi-file seed anymore. VM must be
-    /// down (fresh image: it is).
-    async fn seed_workspace_on_image(&self, image: &std::path::Path) -> anyhow::Result<()> {
-        let mnt = format!("/tmp/mnt-seed-{}", image.file_name().unwrap_or_default().to_string_lossy());
-        std::fs::create_dir_all(&mnt)?;
-        // Mount loop (needs root; wrapper runs as root).
-        let st = tokio::process::Command::new("mount")
-            .args(["-o", "loop", &image.to_string_lossy(), &mnt])
-            .status()
-            .await?;
-        if !st.success() {
-            let _ = std::fs::remove_dir(&mnt);
-            anyhow::bail!("mount loop failed for seed");
-        }
-        // Agent system prompt for zw (ZS_SYSTEM_PROMPT_FILE in the guest):
-        // resolved tenant > category > global > host file, written to the
-        // new-workdir location on the data disk.
-        let seed_tenant = tenant_id_from_image(&image);
-        let (prompt, source) = resolve_system_prompt(
-            &self.db,
-            &self.host_system_prompt_path(),
-            &seed_tenant,
-        )
-        .await;
-        if !prompt.is_empty() {
-            // Kept OUTSIDE zerowrapper/workspace: the agent must not see or
-            // edit its own system prompt; zw reads it via ZS_SYSTEM_PROMPT_FILE.
-            let zws = std::path::Path::new(&mnt).join("zerowrapper");
-            let _ = std::fs::create_dir_all(&zws);
-            if std::fs::write(zws.join("SYSTEM.md"), &prompt).is_ok() {
+        let fresh = !path.exists();
+        std::fs::create_dir_all(&path)?;
+        // Seed a fresh folder with the agent system prompt (SYSTEM.md
+        // resolved tenant > category > global > host file). Best-effort: a
+        // seed failure never fails creation — the guest falls back to the
+        // baked /etc/supervisor/SYSTEM.md.
+        if fresh {
+            if let Err(e) = self.seed_prompt_into(&path, tenant_id).await {
                 self.telemetry
                     .builder()
-                    .level(telemetry::Level::Info)
-                    .kind("vm.disk.prompt_seeded")
+                    .level(telemetry::Level::Warn)
+                    .kind("vm.disk.seed_failed")
                     .category("vm")
-                    .data("source", source.clone())
-                    .message(format!("seeded SYSTEM.md ({source}) into {}", image.display()))
+                    .tenant_id(Some(tenant_id.to_string()))
+                    .message(format!("prompt seed failed (folder valid): {e}"))
                     .emit();
             }
         }
-        let _ = tokio::process::Command::new("umount")
-            .arg(&mnt)
-            .status()
-            .await;
-        let _ = std::fs::remove_dir(&mnt);
+        Ok(path)
+    }
+
+    /// Write the resolved SYSTEM.md into an existing tenant data folder.
+    async fn seed_prompt_into(
+        &self,
+        tenant_dir: &std::path::Path,
+        tenant_id: &str,
+    ) -> anyhow::Result<()> {
+        let (prompt, source) = resolve_system_prompt(
+            &self.db,
+            &self.host_system_prompt_path(),
+            tenant_id,
+        )
+        .await;
+        if prompt.is_empty() {
+            anyhow::bail!("no prompt content resolved");
+        }
+        // Kept OUTSIDE zerowrapper/workspace: the agent must not see or
+        // edit its own system prompt; zw reads it via ZS_SYSTEM_PROMPT_FILE.
+        let zws = tenant_dir.join("zerowrapper");
+        std::fs::create_dir_all(&zws)?;
+        std::fs::write(zws.join("SYSTEM.md"), &prompt)?;
+        self.telemetry
+            .builder()
+            .level(telemetry::Level::Info)
+            .kind("vm.disk.prompt_seeded")
+            .category("vm")
+            .data("source", source.clone())
+            .message(format!("seeded SYSTEM.md ({source}) into {}", tenant_dir.display()))
+            .emit();
         Ok(())
     }
 
-    /// Snapshot files for a tenant (state, mem).
-    pub fn snapshot_paths(&self, tenant_id: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::path::Path::new(&self.snapshots_dir).join(tenant_id);
-        (dir.join("vmstate"), dir.join("mem"))
+    /// Host path of the default agent system prompt
+    /// (`deployment/zerowrapper-mono/SYSTEM.md`).
+    pub fn host_system_prompt_path(&self) -> std::path::PathBuf {
+        host_system_prompt_path_for(&self.system_prompt_host_path, &self.tenant_data_root)
     }
 
-    /// Delete a tenant's snapshot files (tenant deletion).
-    pub fn delete_snapshots(&self, tenant_id: &str) -> anyhow::Result<()> {
-        let dir = std::path::Path::new(&self.snapshots_dir).join(tenant_id);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)?;
+    /// Remove a tenant's container AND data folder (tenant deletion only).
+    /// Kill keeps the folder; only full tenant deletion wipes it.
+    pub fn remove_tenant(&self, tenant_id: &str) -> anyhow::Result<()> {
+        let _ = self.docker.destroy(tenant_id);
+        if let Ok(path) = self.data_disk_path(tenant_id) {
+            if path.exists() {
+                std::fs::remove_dir_all(&path)?;
+            }
         }
         Ok(())
     }
 
-    /// Apparent size (bytes) of a tenant's data-disk image. None when the
-    /// image does not exist (pure `stat`, no fork — safe on hot paths).
-    pub fn disk_size_bytes(&self, tenant_id: &str) -> Option<u64> {
-        let path = self.data_disk_path(tenant_id).ok()?;
-        std::fs::metadata(&path).ok().map(|m| m.len())
+    /// Destroy the tenant container, keeping the data folder (Kill: next
+    /// wake recreates fresh). Best-effort and idempotent.
+    pub async fn destroy_container(&self, tenant_id: &str) {
+        self.docker.destroy(tenant_id).await;
     }
 
-    /// Real host blocks consumed by the image (sparse-aware: a 2 GiB image
-    /// holding 200 MiB reports ~200 MiB). Best-effort: None when `du` is
-    /// missing or fails. Keep off hot paths (forks a process).
+    /// Stop the tenant container, keeping container + data (Stop).
+    pub async fn stop_container(&self, tenant_id: &str) {
+        self.docker.stop(tenant_id).await;
+    }
+
+    /// Container liveness for admin flows: true when Running (pauses count
+    /// as present but not live — wake unpauses them).
+    pub async fn is_container_live(&self, tenant_id: &str) -> bool {
+        self.docker.state(tenant_id).await.0
+    }
+
+    /// Restart a live container (stop + start) so it picks up new files
+    /// (prompt, binaries). No-op when no container exists.
+    pub async fn restart_container(&self, tenant_id: &str) {
+        let name = DockerDriver::container_name(tenant_id);
+        let (running, _paused) = self.docker.state(tenant_id).await;
+        if !running {
+            let _ = self.ensure_running(tenant_id).await;
+            return;
+        }
+        self.docker.stop(tenant_id).await;
+        if let Err(e) = self.docker.start(tenant_id).await {
+            self.telemetry
+                .builder()
+                .level(telemetry::Level::Warn)
+                .kind("vm.restart.failed")
+                .category("vm")
+                .tenant_id(Some(tenant_id.to_string()))
+                .message(format!("restart {name} failed: {e}"))
+                .emit();
+        }
+    }
+
+    /// Per-container resource usage for fleet/dashboard (None when the
+    /// container doesn't exist). First poll per boot reports cpu 0.0.
+    pub async fn container_stats(&self, tenant_id: &str) -> Option<ContainerStats> {
+        self.docker.stats_one(tenant_id).await
+    }
+
+    /// Apparent size (bytes) of a tenant's data folder. None when missing
+    /// (pure `stat`, no fork — safe on hot paths).
+    pub fn disk_size_bytes(&self, tenant_id: &str) -> Option<u64> {
+        let path = self.data_disk_path(tenant_id).ok()?;
+        Some(dir_size_bytes(&path))
+    }
+
+    /// Real host blocks consumed by the tenant data folder. Same as size
+    /// (bind folders are not sparse images). Keep off hot paths.
     pub async fn disk_used_bytes(&self, tenant_id: &str) -> Option<u64> {
+        let path = self.data_disk_path(tenant_id).ok()?;
+        if !path.exists() {
+            return None;
+        }
+        Some(dir_size_bytes(&path))
+    }
         let path = self.data_disk_path(tenant_id).ok()?;
         if !path.exists() {
             return None;
@@ -332,57 +326,19 @@ impl VmRuntime {
             .ok()
     }
 
-    /// Filesystem size (bytes) of an ext4 image via `dumpe2fs -h`
-    /// (Block count x Block size). None when unreadable — callers fall back
-    /// to the file size.
-    async fn fs_size_bytes(path: &std::path::Path) -> Option<u64> {
-        let out = tokio::process::Command::new("dumpe2fs")
-            .args(["-h"])
-            .arg(path)
-            .output()
-            .await
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mut blocks: Option<u64> = None;
-        let mut bsize: Option<u64> = None;
-        for line in text.lines() {
-            let line = line.trim();
-            if let Some(v) = line.strip_prefix("Block count:") {
-                blocks = v.trim().parse().ok();
-            } else if let Some(v) = line.strip_prefix("Block size:") {
-                bsize = v.trim().parse().ok();
-            }
-        }
-        Some(blocks? * bsize?)
-    }
 
-    /// Sync the agent system prompt into an EXISTING tenant disk via offline
-    /// loop mount (always refresh, `.bak-date` backup). VM must be down
-    /// (socket absent); caller kills first. Returns 1 when written.
+
+    /// Sync the agent system prompt into the tenant data folder (always
+    /// refresh, `.bak-date` backup). Plain host write — works whether the
+    /// container runs or not. Returns 1 when written.
     pub async fn sync_workspace_seed(
         &self,
         tenant_id: &str,
         _force: bool,
     ) -> anyhow::Result<usize> {
-        let image = self.data_disk_path(tenant_id)?;
-        if !image.exists() {
-            anyhow::bail!("no data disk for tenant");
-        }
-        if crate::runtime::fc_socket_path(tenant_id).exists() {
-            anyhow::bail!("vm must be shut down before workspace sync (socket present)");
-        }
-        let mnt = format!("/tmp/mnt-ws-{}", tenant_id);
-        std::fs::create_dir_all(&mnt)?;
-        let st = tokio::process::Command::new("mount")
-            .args(["-o", "loop", &image.to_string_lossy(), &mnt])
-            .status()
-            .await?;
-        if !st.success() {
-            let _ = std::fs::remove_dir(&mnt);
-            anyhow::bail!("mount loop failed for workspace sync");
+        let dir = self.data_disk_path(tenant_id)?;
+        if !dir.exists() {
+            anyhow::bail!("no data folder for tenant");
         }
         let mut written = 0usize;
         // Agent system prompt (managed file: always refresh from the resolved
@@ -391,7 +347,7 @@ impl VmRuntime {
             resolve_system_prompt(&self.db, &self.host_system_prompt_path(), tenant_id).await;
         if !prompt.is_empty() {
             // Outside zerowrapper/workspace: hidden from the agent.
-            let zws = std::path::Path::new(&mnt).join("zerowrapper");
+            let zws = dir.join("zerowrapper");
             let _ = std::fs::create_dir_all(&zws);
             let dst = zws.join("SYSTEM.md");
             if dst.exists() {
@@ -414,181 +370,28 @@ impl VmRuntime {
                     .emit();
             }
         }
-        let _ = tokio::process::Command::new("umount")
-            .arg(&mnt)
-            .status()
-            .await;
-        let _ = std::fs::remove_dir(&mnt);
         Ok(written)
     }
 
-    /// Drop the guest's binaries version stamp (`versions.json`) via offline
-    /// loop mount so the next boot re-demands every binary from the wrapper.
-    /// This is the admin "push binaries" path: binaries otherwise NEVER move
-    /// on their own (no auto-sync — host CPU/RAM). VM must be down (socket
-    /// absent); caller kills first. Returns true when a stamp was removed.
+    /// Drop the guest's binaries version stamp (`versions.json`) so the next
+    /// boot re-demands every binary from the wrapper. This is the admin
+    /// "push binaries" path: binaries otherwise NEVER move on their own (no
+    /// auto-sync — host CPU/RAM). Plain host delete, container may run.
+    /// Returns true when a stamp was removed.
     pub async fn drop_binaries_versions(&self, tenant_id: &str) -> anyhow::Result<bool> {
-        let image = self.data_disk_path(tenant_id)?;
-        if !image.exists() {
-            anyhow::bail!("no data disk for tenant");
+        let dir = self.data_disk_path(tenant_id)?;
+        if !dir.exists() {
+            anyhow::bail!("no data folder for tenant");
         }
-        if crate::runtime::fc_socket_path(tenant_id).exists() {
-            anyhow::bail!("vm must be shut down before binaries push (socket present)");
-        }
-        let mnt = format!("/tmp/mnt-bin-{tenant_id}");
-        std::fs::create_dir_all(&mnt)?;
-        let st = tokio::process::Command::new("mount")
-            .args(["-o", "loop", &image.to_string_lossy(), &mnt])
-            .status()
-            .await?;
-        if !st.success() {
-            let _ = std::fs::remove_dir(&mnt);
-            anyhow::bail!("mount loop failed for binaries push");
-        }
-        let stamp = std::path::Path::new(&mnt).join("supervisor/binaries/versions.json");
-        let removed = stamp.exists() && std::fs::remove_file(&stamp).is_ok();
-        let _ = tokio::process::Command::new("umount")
-            .arg(&mnt)
-            .status()
-            .await;
-        let _ = std::fs::remove_dir(&mnt);
-        Ok(removed)
+        let stamp = dir.join("supervisor/binaries/versions.json");
+        Ok(stamp.exists() && std::fs::remove_file(&stamp).is_ok())
     }
 
-    /// Flush the guest's page cache over SSH (`sync`) so a subsequent kill
-    /// lands on a quiescent filesystem. Best-effort with a short timeout:
-    /// failure falls back to kill-only (journal replay), never blocks.
-    pub async fn sync_guest_disk(&self, tenant_id: &str) {
-        let ip: Option<String> = match self.db.conn() {
-            Ok(c) => db::global::networks::all(&c)
-                .await
-                .ok()
-                .and_then(|rows| {
-                    rows.into_iter()
-                        .find(|r| r.tenant_id == tenant_id)
-                        .map(|r| r.ip_address)
-                }),
-            Err(_) => None,
-        };
-        let Some(ip) = ip else { return };
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(8),
-            tokio::process::Command::new("ssh")
-                .args([
-                    "-p",
-                    "2222",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "ConnectTimeout=5",
-                    &format!("root@{ip}"),
-                    "sync",
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status(),
-        )
-        .await;
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-
-    /// Kill a tenant's Firecracker process and remove its (now stale) API
-    /// socket file, so an offline disk operation can proceed and the next
-    /// spawn binds cleanly. Guest RAM state is discarded; disk data is
-    /// untouched (page cache synced first, ext4 journal replays on mount).
+    /// Stop a tenant's container (SIGTERM, docker default timeout) so an
+    /// offline operation can proceed. Container + data folder untouched;
+    /// RAM state is discarded. Best-effort and idempotent.
     pub async fn kill_vm_process(&self, tenant_id: &str) {
-        self.sync_guest_disk(tenant_id).await;
-        let pattern = format!("/tmp/fc_{tenant_id}.sock");
-        kill_process_pattern(&pattern).await;
-        let _ = std::fs::remove_file(format!("/tmp/fc_{tenant_id}.sock"));
-    }
-
-    /// Grow a tenant's data disk to `size_gb` GiB without touching existing
-    /// data: `truncate` only appends zero blocks, then `resize2fs` grows the
-    /// filesystem into them. Grow-only (`size_gb` must exceed current size,
-    /// capped at `MAX_DATA_DISK_GB`).
-    ///
-    /// SAFETY: the VM must be DOWN (no FC socket). A live guest holds cached
-    /// filesystem metadata; growing under it corrupts. The admin handler
-    /// kills the VM first. Sleep snapshots are deleted: they describe the
-    /// old geometry and must never restore over the resized disk (the next
-    /// wake is a fresh boot — disk data intact, RAM state not).
-    pub async fn resize_data_disk(
-        &self,
-        tenant_id: &str,
-        size_gb: u64,
-    ) -> anyhow::Result<u64> {
-        if size_gb == 0 || size_gb > MAX_DATA_DISK_GB {
-            anyhow::bail!("size_gb must be 1..={MAX_DATA_DISK_GB}");
-        }
-        let path = self.data_disk_path(tenant_id)?;
-        if !path.exists() {
-            anyhow::bail!("no data disk for tenant (never booted with disk support?)");
-        }
-        if fc_socket_path(tenant_id).exists() {
-            anyhow::bail!("vm must be shut down before resize (socket present)");
-        }
-        let cur_file = std::fs::metadata(&path)?.len();
-        // Filesystem size (blocks) can LAG the file size when an earlier
-        // attempt grew the file but failed before resize2fs: compare the
-        // request against the fs, and skip truncate when the file is
-        // already big enough (makes retry repair instead of refuse).
-        let cur_fs = Self::fs_size_bytes(&path).await.unwrap_or(cur_file);
-        let want = size_gb * 1024 * 1024 * 1024;
-        if want <= cur_fs {
-            anyhow::bail!("grow-only: {size_gb}GiB is not larger than current filesystem");
-        }
-        // 1. Grow the file when needed (append-only; existing bytes
-        //    untouched). Skipped when a previous attempt already grew it.
-        if want > cur_file {
-            let st = tokio::process::Command::new("truncate")
-                .args(["-s", &format!("{want}")])
-                .arg(&path)
-                .status()
-                .await?;
-            if !st.success() {
-                anyhow::bail!("truncate data disk failed");
-            }
-        }
-        // 2. Filesystem check (replays the journal from the kill; must be
-        //    clean before resize). e2fsck -p exits 0 (clean) or 1 (errors
-        //    corrected — equally fine); 2+ means uncorrected trouble.
-        //    Refusal here leaves a valid fs at the OLD size: data safe,
-        //    resize aborted.
-        let ck = tokio::process::Command::new("e2fsck")
-            .args(["-p", "-f"])
-            .arg(&path)
-            .status()
-            .await?;
-        match ck.code() {
-            Some(0) | Some(1) => {}
-            other => {
-                anyhow::bail!("e2fsck data disk failed (exit {other:?}; image left at old size, data intact)")
-            }
-        }
-        // 3. Grow the filesystem into the new space.
-        let rs = tokio::process::Command::new("resize2fs")
-            .arg(&path)
-            .status()
-            .await?;
-        if !rs.success() {
-            anyhow::bail!("resize2fs failed (file grown, fs at old size — retry or investigate)");
-        }
-        // 4. Old-geometry snapshots must never restore over the new disk.
-        let _ = self.delete_snapshots(tenant_id);
-        let now = std::fs::metadata(&path)?.len();
-        self.telemetry
-            .builder()
-            .level(telemetry::Level::Info)
-            .kind("vm.disk.resized")
-            .category("vm")
-            .tenant_id(Some(tenant_id.to_string()))
-            .data("size_bytes", now.to_string())
-            .message(format!("data disk resized to {size_gb}GiB for tenant {tenant_id}"))
-            .emit();
-        Ok(now)
+        self.docker.stop(tenant_id).await;
     }
 
     /// Ensure the tenant's VM is running; return its `IP:port`.
@@ -623,31 +426,17 @@ impl VmRuntime {
     /// Snapshot the tenant's live VM to disk. Returns true when a usable
     /// snapshot now exists (idle path calls this before killing the VM and
     /// then KEEPS the row so wake restores instead of rebooting).
+    /// Sleep the tenant container (`pause`, cgroup freezer): RAM frozen in
+    /// place, zero CPU, instant `unpause` resume. Returns true when the
+    /// container is now paused. The idle path calls this and KEEPS the row
+    /// so wake unpauses instead of recreating.
     pub async fn snapshot_tenant(&self, tenant_id: &str) -> anyhow::Result<bool> {
         let conn = self.db.conn()?;
         let rows = db::global::networks::all(&conn).await?;
         if rows.iter().all(|r| r.tenant_id != tenant_id) {
             return Ok(false);
         }
-        let sock = sock_path(tenant_id);
-        if !sock.exists() {
-            return Ok(false);
-        }
-        let (state_path, mem_path) = self.snapshot_paths(tenant_id);
-        if let Some(parent) = state_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let client = FirecrackerClient::new(sock.to_string_lossy().to_string());
-        let ok = crate::lifecycle::snapshot::snapshot_vm(
-            &self.telemetry,
-            &client,
-            tenant_id,
-            &state_path.to_string_lossy(),
-            &mem_path.to_string_lossy(),
-        )
-        .await
-        .is_ok();
-        Ok(ok)
+        Ok(self.docker.pause(tenant_id).await)
     }
 
     /// Recorded address that answers TCP on the zw port.
@@ -665,9 +454,8 @@ impl VmRuntime {
         }
     }
 
-    /// Resume a dark recorded VM from its on-disk snapshot (same IP + tap).
-    /// Returns None when there is no row, no snapshot files, or the restore
-    /// fails (caller falls back to fresh boot).
+    /// Resume a paused container (same IP, RAM intact). Returns None when
+    /// there is no row or nothing paused (caller falls back to fresh boot).
     async fn restore_if_snapshotted(
         &self,
         tenant_id: &str,
@@ -677,66 +465,11 @@ impl VmRuntime {
         let Some(res) = rows.into_iter().find(|r| r.tenant_id == tenant_id) else {
             return Ok(None);
         };
-        let (state_path, mem_path) = self.snapshot_paths(tenant_id);
-        if !state_path.exists() || !mem_path.exists() {
-            // No snapshot to restore (e.g. after Kill): fall through to
-            // fresh boot, which REUSES the kept IP row. Never release here —
-            // tenant IPs are stable for the tenant's lifetime.
+        let (_running, paused) = self.docker.state(tenant_id).await;
+        if !paused {
             return Ok(None);
         }
-        // Recreate the identical host NIC, spawn, load + resume.
-        let tap = tap_name_for_tenant(tenant_id);
-        let gateway = gateway_for_ip(&res.ip_address);
-        if network::bridge::create::ensure_bridge(BRIDGE_NAME, &gateway).is_err() {
-            return Ok(None);
-        }
-        if tap::create_tap(TapCreateOptions {
-            name: tap.clone(),
-            ip: res.ip_address.clone(),
-        })
-        .is_err()
-        {
-            return Ok(None);
-        }
-        let _ = tap::bring_tap_up(&tap);
-        kill_stale_holder(tenant_id).await;
-        let sock = sock_path(tenant_id);
-        let client = match FirecrackerClient::spawn_firecracker(
-            &self.vm_manager.firecracker_bin,
-            &sock,
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(_) => return Ok(None),
-        };
-        let ok = crate::lifecycle::restore::restore_vm(
-            &self.telemetry,
-            &client,
-            tenant_id,
-            &state_path.to_string_lossy(),
-            &mem_path.to_string_lossy(),
-            true,
-        )
-        .await
-        .is_ok();
-        if !ok {
-            // Preserve evidence: the fresh-boot fallback below truncates the
-            // per-VM FC log (same deterministic path), destroying the load
-            // error. Keep a copy next to the socket.
-            let failed_log = sock.with_extension("restore-failed.log");
-            let _ = std::fs::copy(sock.with_extension("log"), &failed_log);
-            self.telemetry
-                .builder()
-                .level(telemetry::Level::Warn)
-                .kind("vm.restore.fallback")
-                .category("vm")
-                .tenant_id(Some(tenant_id.to_string()))
-                .message(format!(
-                    "restore failed, falling back to fresh boot (see {})",
-                    failed_log.display()
-                ))
-                .emit();
+        if !self.docker.unpause(tenant_id).await {
             return Ok(None);
         }
         let _ = db::global::tenants::set_status(&conn, tenant_id, TenantStatus::Ready.as_str()).await;
@@ -747,20 +480,30 @@ impl VmRuntime {
             .kind("vm.restore.wake")
             .category("vm")
             .tenant_id(Some(tenant_id.to_string()))
-            .message(format!("VM resumed for tenant {tenant_id} at {addr}"))
+            .message(format!("container unpaused for tenant {tenant_id} at {addr}"))
             .emit();
         Ok(Some(addr))
     }
 
-    /// Full fresh boot for a tenant with no usable VM or snapshot.
+    /// Full fresh boot for a tenant with no usable container: create (or
+    /// reuse) the container and start it. Reuses the kept IP reservation
+    /// (kill keeps the row by design); allocates only for tenants that never
+    /// had an address. Tenant IPs are stable for life.
     async fn fresh_boot(&self, tenant_id: &str) -> anyhow::Result<String> {
-        // Look up the tenant to find their category/template.
+        // Look up the tenant to find their category/template (memory/CPU).
         let tenant = self.tenant(tenant_id).await?;
         let template = self.template_for_tenant(&tenant).await?;
+        let memory_mb = if template.memory_mb == 0 {
+            DEFAULT_MEM_MIB
+        } else {
+            template.memory_mb
+        };
+        let cpus = if template.vcpu_count == 0 {
+            DEFAULT_VCPU as f64
+        } else {
+            template.vcpu_count as f64
+        };
 
-        // Reuse the kept IP reservation (kill keeps the row by design; only
-        // RAM snapshots go). Allocate from the pool only for tenants that
-        // never had an address. Tenant IPs are stable for life.
         let kept_ip = if let Ok(conn) = self.db.conn() {
             db::global::networks::all(&conn)
                 .await
@@ -785,67 +528,13 @@ impl VmRuntime {
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("IP pool exhausted"))?,
         };
-        // Defensive: snapshots must never restore over a fresh boot (kill
-        // already deletes them; this covers races).
-        let _ = self.delete_snapshots(tenant_id);
 
-        // 4. Host networking (needs root): bridge with gateway address,
-        // tenant tap attached to the bridge, tap up, forwarding/NAT for
-        // guest egress. NAT is best-effort: without it the guest is still
-        // reachable from the host (SSH :2222, zw :9092, status :8080).
-        //
-        // The tap itself gets NO IP address: it is a pure L2 bridge member.
-        // Assigning the guest IP to the tap makes the HOST claim that IP
-        // (local route) so host TCP connects hit the host stack (RST) and
-        // ping "works" without ever reaching the guest. The guest owns its
-        // IP (via vm_ip= cmdline); the host reaches it through br0.
-        let gateway = gateway_for_ip(&ip);
-        let tap = tap_name_for_tenant(tenant_id);
-        let guest_mac = guest_mac_for_tenant(tenant_id);
-        network::bridge::create::ensure_bridge(BRIDGE_NAME, &gateway)?;
-        tap::create_tap(TapCreateOptions {
-            name: tap.clone(),
-            ip: ip.clone(),
-        })?;
-        tap::bring_tap_up(&tap)?;
-        Self::enable_forwarding_best_effort(&self.telemetry, &ip);
-
-        // 5. Boot Firecracker for this tenant (clearing any orphan holder
-        // first so the tap attach cannot EBUSY).
-        kill_stale_holder(tenant_id).await;
-        let sock = sock_path(tenant_id);
-        let client =
-            FirecrackerClient::spawn_firecracker(&self.vm_manager.firecracker_bin, &sock).await?;
-
-        // Build a concrete template with the host-side kernel + initrd paths.
-        let boot_template = VmTemplate {
-            id: template.id,
-            name: template.name,
-            description: template.description,
-            rootfs_path: String::new(),
-            kernel_path: self.kernel_path.clone(),
-            initrd_path: self.initrd_path.clone(),
-            vcpu_count: if template.vcpu_count == 0 {
-                DEFAULT_VCPU
-            } else {
-                template.vcpu_count
-            },
-            memory_mb: if template.memory_mb == 0 {
-                DEFAULT_MEM_MIB
-            } else {
-                template.memory_mb
-            },
-            requires_gpu: template.requires_gpu,
-            status: template.status,
-            created_at: template.created_at,
-            updated_at: template.updated_at,
-        };
-        // Tenant data disk: created once (~0.1 s), attached every boot.
-        // Best-effort at the ensure step only — a tenant must still boot
-        // (diskless, as before) if disk creation fails; the failure is
-        // loud in telemetry so it cannot go unnoticed.
-        let data_disk = match self.ensure_data_disk(tenant_id).await {
-            Ok(p) => Some(p),
+        // Tenant bridge network (idempotent) + data folder (created once).
+        self.docker
+            .ensure_network(&self.subnet, &self.gateway)
+            .await?;
+        let data_dir = match self.ensure_data_disk(tenant_id).await {
+            Ok(p) => p,
             Err(e) => {
                 self.telemetry
                     .builder()
@@ -853,25 +542,30 @@ impl VmRuntime {
                     .kind("vm.disk.ensure_failed")
                     .category("vm")
                     .tenant_id(Some(tenant_id.to_string()))
-                    .message(format!("data disk unavailable, booting diskless: {e}"))
+                    .message(format!("data folder unavailable, aborting boot: {e}"))
                     .emit();
-                None
+                return Err(anyhow::anyhow!("data folder unavailable: {e}"));
             }
         };
-        crate::lifecycle::boot::boot_vm_with_net(
-            &self.telemetry,
-            &client,
-            tenant_id,
-            &boot_template,
-            Some(&NetAttach::new(&tap, &guest_mac, &ip)),
-            data_disk.as_deref(),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        self.docker
+            .create(
+                tenant_id,
+                &ip,
+                &data_dir.to_string_lossy(),
+                memory_mb,
+                cpus,
+            )
+            .await?;
+        self.docker
+            .start(tenant_id)
+            .await?;
 
-        // 6. Record the network assignment + VM process in the DB.
+        // Record the network assignment + address in the DB. The tap column
+        // keeps the container name (same deterministic mapping as before,
+        // now pointing at docker instead of a tap device).
+        let cname = DockerDriver::container_name(tenant_id);
         let conn = self.db.conn()?;
-        db::global::networks::reserve(&conn, tenant_id, &ip, &tap).await?;
+        db::global::networks::reserve(&conn, tenant_id, &ip, &cname).await?;
         db::global::tenants::set_vm_address(&conn, tenant_id, &ip).await?;
         // Mark Ready (a reaped tenant was Asleep; a fresh one Active).
         let _ = db::global::tenants::set_status(&conn, tenant_id, TenantStatus::Ready.as_str()).await;
@@ -920,121 +614,6 @@ impl VmRuntime {
             .await?
             .ok_or_else(|| anyhow::anyhow!("vm template {} not found", category.vm_template_id))
     }
-
-    /// Best-effort guest egress: enable IPv4 forwarding and masquerade the    /// tenant /24. Failures only warn (host→guest still works without NAT);
-    /// needs root + iptables.
-    fn enable_forwarding_best_effort(telemetry: &Telemetry, vm_ip: &str) {
-        let cidr = format!("{}/24", gateway_for_ip(vm_ip));
-        // `-C` check before `-A`: blind appends pile hundreds of duplicate
-        // rules across boots and burn host CPU on every packet.
-        let steps: &[(&str, &[&str], &[&str])] = &[
-            ("sysctl", &["-w", "net.ipv4.ip_forward=1"], &[]),
-            (
-                "iptables",
-                &[
-                    "-t", "nat", "-A", "POSTROUTING", "-s", &cidr, "-j", "MASQUERADE",
-                ],
-                &[
-                    "-t", "nat", "-C", "POSTROUTING", "-s", &cidr, "-j", "MASQUERADE",
-                ],
-            ),
-            (
-                "iptables",
-                &["-A", "FORWARD", "-s", &cidr, "-j", "ACCEPT"],
-                &["-C", "FORWARD", "-s", &cidr, "-j", "ACCEPT"],
-            ),
-        ];
-        // NOTE: `cidr` is borrowed by `steps`; keep it alive for the loop.
-        for (bin, args, check) in steps {
-            if !check.is_empty()
-                && std::process::Command::new(bin)
-                    .args(*check)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false)
-            {
-                continue;
-            }
-            let ok = std::process::Command::new(bin)
-                .args(*args)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !ok {
-                telemetry
-                    .builder()
-                    .level(telemetry::Level::Warn)
-                    .kind("vm.net.nat_skipped")
-                    .category("vm")
-                    .message(format!("best-effort net step failed: {bin} {args:?}"))
-                    .emit();
-            }
-        }
-    }
-}
-
-/// Deterministic API socket per tenant (spawn, snapshot, reaper agree).
-pub fn fc_socket_path(tenant_id: &str) -> std::path::PathBuf {
-    sock_path(tenant_id)
-}
-
-/// Kill every process matching `pattern` (full-cmdline match), verified.
-/// SIGTERM first (lets Firecracker flush + exit cleanly), up to 5s grace,
-/// then SIGKILL stragglers and confirm absence. Fire-and-hope pkill caused
-/// a real incident: a SIGTERMed FC still answering during the next wake
-/// made the old generation serve traffic the new boot was meant to take.
-pub async fn kill_process_pattern(pattern: &str) {
-    let quiet = || {
-        let mut c = tokio::process::Command::new("pkill");
-        c.stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        c
-    };
-    let alive = || async {
-        tokio::process::Command::new("pgrep")
-            .args(["-f", pattern])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-    let _ = quiet().args(["-f", pattern]).status().await;
-    for _ in 0..10 {
-        if !alive().await {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-    let _ = quiet().args(["-9", "-f", pattern]).status().await;
-    for _ in 0..4 {
-        if !alive().await {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-}
-
-/// Kill a stale Firecracker still holding this tenant's tap/socket.
-/// Wrapper restarts orphan VMs BY DESIGN (guests outlive the wrapper so a
-/// restart doesn't kill tenants). But a dead-yet-holding FC (guest app
-/// crashed, process alive) blocks the tap with EBUSY: the next boot's PUT
-/// /network-interfaces then 400s ("Resource busy"). Clearing the holder
-/// before every spawn makes boots idempotent across generations.
-/// Safe: the wrapper's own cmdline never contains the socket pattern.
-async fn kill_stale_holder(tenant_id: &str) {
-    let pattern = format!("/tmp/fc_{tenant_id}.sock");
-    kill_process_pattern(&pattern).await;
-}
-
-fn sock_path(tenant_id: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(format!("/tmp/fc_{tenant_id}.sock"))
-}
 
 /// Fast TCP probe (800ms) — true when something accepts on `IP:port`.
 async fn probe_tcp(addr: &str) -> bool {

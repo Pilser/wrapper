@@ -143,8 +143,8 @@ async fn async_main() -> anyhow::Result<()> {
         .category("vm")
         .source("wrapper::main")
         .message(format!(
-            "vm subsystem ready (firecracker={}, healthy={vm_healthy})",
-            cfg.firecracker.binary_path
+            "vm subsystem ready (docker image={}, healthy={vm_healthy})",
+            cfg.docker.image
         ))
         .emit();
 
@@ -317,20 +317,8 @@ async fn async_main() -> anyhow::Result<()> {
     // frontend) with everything else proxied to the tenant's zw.
     // Runs as a background task; the event loop below still owns shutdown.
     let serve_bind = format!("{}:{}", cfg.wrapper.bind_address, cfg.wrapper.port);
-    let disks_dir = std::path::Path::new(&cfg.firecracker.kernel_path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".".to_string());
-    let snapshots_dir = std::path::Path::new(&cfg.database.global_path)
-        .parent()
-        .map(|p| p.join("snapshots").to_string_lossy().to_string())
-        .unwrap_or_else(|| "data/snapshots".to_string());
-    let _ = std::fs::create_dir_all(&snapshots_dir);
-    let data_disks_dir = std::path::Path::new(&cfg.database.global_path)
-        .parent()
-        .map(|p| p.join("disks").to_string_lossy().to_string())
-        .unwrap_or_else(|| "data/disks".to_string());
-    let _ = std::fs::create_dir_all(&data_disks_dir);
+    let tenant_data_root = cfg.docker.tenant_data_root.clone();
+    let _ = std::fs::create_dir_all(&tenant_data_root);
     let telemetry_dir = std::path::Path::new(&cfg.telemetry.disk.path)
         .canonicalize()
         .map(|p| p.to_string_lossy().to_string())
@@ -340,14 +328,13 @@ async fn async_main() -> anyhow::Result<()> {
         telemetry: telemetry.clone(),
         activity: activity.clone(),
         telemetry_dir,
-        firecracker_bin: cfg.firecracker.binary_path.clone(),
         net_cfg: net_cfg.clone(),
-        kernel_path: cfg.firecracker.kernel_path.clone(),
-        initrd_path: cfg.firecracker.initrd_path.clone(),
+        docker_image: cfg.docker.image.clone(),
+        docker_network: cfg.docker.network.clone(),
+        docker_subnet: cfg.docker.subnet.clone(),
+        docker_gateway: cfg.docker.gateway.clone(),
         public_base: cfg.api.public_base.clone(),
-        disks_dir,
-        snapshots_dir,
-        data_disks_dir,
+        tenant_data_root,
         binaries_dir: cfg.binaries.dir.clone(),
         system_prompt_host_path: cfg.vm.system_prompt_host_path.clone(),
         idle_timeout_minutes: cfg.vm.idle_timeout_minutes,

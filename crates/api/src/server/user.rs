@@ -223,7 +223,7 @@ pub async fn vm_wake(
 
 /// VM view from the networks reservation (None row = asleep).
 /// VM view: "asleep" when there is no row OR the tenant is marked Asleep
-/// (snapshotted to disk — wake restores instead of rebooting).
+/// (paused container — wake unpauses instead of recreating).
 async fn vm_view(state: &AppState, tenant: &Tenant) -> (String, Option<String>) {
     let tenant_id = tenant.id.as_str();
     if tenant.status.as_str() == TenantStatus::Asleep.as_str() {

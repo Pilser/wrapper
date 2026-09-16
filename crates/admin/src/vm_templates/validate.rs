@@ -2,26 +2,13 @@
 
 use shared::{Error, Result, VmTemplate};
 
-/// Check that paths are set and resources are sane.
+/// Check that the name is set and resources are sane. Kernel/initrd/rootfs
+/// paths are legacy Firecracker fields (kept in the row, unused by the
+/// docker backend, never required).
 pub fn validate_template(template: &VmTemplate) -> Result<()> {
     if template.name.trim().is_empty() {
         return Err(Error::InvalidInput(
             "template name must not be empty".into(),
-        ));
-    }
-    if template.rootfs_path.trim().is_empty() {
-        return Err(Error::InvalidInput(
-            "rootfs_path must not be empty".into(),
-        ));
-    }
-    if template.kernel_path.trim().is_empty() {
-        return Err(Error::InvalidInput(
-            "kernel_path must not be empty".into(),
-        ));
-    }
-    if template.initrd_path.trim().is_empty() {
-        return Err(Error::InvalidInput(
-            "initrd_path must not be empty".into(),
         ));
     }
     if template.vcpu_count == 0 {

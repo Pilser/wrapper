@@ -6,11 +6,11 @@ pub fn validate(t: &VmTemplate) -> anyhow::Result<()> {
     if t.id.is_empty() {
         anyhow::bail!("template id is empty");
     }
-    if t.rootfs_path.is_empty() {
-        anyhow::bail!("template rootfs_path is empty");
+    if t.vcpu_count == 0 {
+        anyhow::bail!("template vcpu_count is zero");
     }
-    if t.kernel_path.is_empty() {
-        anyhow::bail!("template kernel_path is empty");
+    if t.memory_mb == 0 {
+        anyhow::bail!("template memory_mb is zero");
     }
     Ok(())
 }

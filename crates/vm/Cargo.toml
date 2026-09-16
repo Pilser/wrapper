@@ -18,3 +18,5 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+bollard = "0.21"
+futures-util = { version = "0.3", features = ["std", "async-await"] }
