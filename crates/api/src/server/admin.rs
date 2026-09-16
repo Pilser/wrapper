@@ -1724,7 +1724,7 @@ pub async fn supervisor_binaries_manifest(
         return e;
     }
     let dir = std::path::PathBuf::from(&state.binaries_dir);
-    let files = shared::binaries::manifest(&dir);
+    let files = shared::binaries::manifest_cached(&dir);
     json::ok(serde_json::json!({ "files": files }))
 }
 
@@ -1770,7 +1770,7 @@ pub async fn binaries_list(
         return e;
     }
     let dir = std::path::PathBuf::from(&state.binaries_dir);
-    let files = shared::binaries::manifest(&dir);
+    let files = shared::binaries::manifest_cached(&dir);
     json::ok(serde_json::json!({ "dir": dir.to_string_lossy(), "files": files }))
 }
 
@@ -1824,6 +1824,117 @@ pub async fn binaries_upload(
         size: bytes.len() as u64,
     };
     json::ok(serde_json::json!({ "path": entry.path, "sha256": entry.sha256, "size": entry.size }))
+}
+
+async fn binaries_push_one(
+    state: &AppState,
+    runtime: &vm::runtime::VmRuntime,
+    tenant_id: &str,
+) -> serde_json::Value {
+    let was_live = vm::runtime::fc_socket_path(tenant_id).exists();
+    if was_live {
+        runtime.kill_vm_process(tenant_id).await;
+    }
+    match runtime.drop_binaries_versions(tenant_id).await {
+        Ok(stamp_dropped) => {
+            let ip = if was_live {
+                state.activity.touch(tenant_id);
+                runtime
+                    .ensure_running(tenant_id)
+                    .await
+                    .ok()
+                    .and_then(|a| a.split(':').next().map(str::to_string))
+            } else {
+                None
+            };
+            serde_json::json!({
+                "tenant_id": tenant_id,
+                "stamp_dropped": stamp_dropped,
+                "re_waked": ip.is_some(),
+                "ip": ip,
+            })
+        }
+        Err(e) => {
+            if was_live {
+                state.activity.touch(tenant_id);
+                let _ = runtime.ensure_running(tenant_id).await;
+            }
+            serde_json::json!({ "tenant_id": tenant_id, "error": e.to_string() })
+        }
+    }
+}
+
+/// POST /api/admin/binaries/push {tenant_id} -> {stamp_dropped, re_waked}.
+/// Admin-triggered binary refresh: drops the guest's versions stamp so the
+/// next boot re-demands every binary. Binaries NEVER move on their own.
+/// Kills when live, re-wakes when live. Sleeping VMs just lose the stamp.
+pub async fn binaries_push(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let tenant_id = match body.get("tenant_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => return json::bad_request("tenant_id required"),
+    };
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    json::ok(binaries_push_one(state, &runtime, &tenant_id).await)
+}
+
+/// POST /api/admin/binaries/push-bulk {tenant_ids?[], category_id?, all?}
+/// -> {results:[...]}. Sequential (loop mounts contend if parallel).
+pub async fn binaries_push_bulk(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let tenant_ids: Vec<String> = if let Some(arr) = body.get("tenant_ids").and_then(|v| v.as_array()) {
+        arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+    } else if let Some(cat) = body.get("category_id").and_then(|v| v.as_str()) {
+        let conn = match state.gdb.conn() {
+            Ok(c) => c,
+            Err(_) => return json::internal(),
+        };
+        match db::global::tenants::list(&conn).await {
+            Ok(rows) => rows.into_iter().filter(|t| t.category_id == cat).map(|t| t.id).collect(),
+            Err(_) => return json::internal(),
+        }
+    } else if body.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let conn = match state.gdb.conn() {
+            Ok(c) => c,
+            Err(_) => return json::internal(),
+        };
+        match db::global::tenants::list(&conn).await {
+            Ok(rows) => rows.into_iter().map(|t| t.id).collect(),
+            Err(_) => return json::internal(),
+        }
+    } else {
+        return json::bad_request("provide tenant_ids[] or category_id or all:true");
+    };
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    let mut results = Vec::new();
+    for tid in tenant_ids {
+        results.push(binaries_push_one(state, &runtime, &tid).await);
+    }
+    json::ok(serde_json::json!({ "results": results }))
 }
 
 /// DELETE /api/admin/system-prompt?scope=&ref= -> {deleted: bool}.

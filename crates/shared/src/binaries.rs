@@ -36,6 +36,52 @@ fn hex_encode(bytes: impl AsRef<[u8]>) -> String {
         .collect()
 }
 
+/// Newest mtime under the dir (top level + `zw-assets/`). Used to skip
+/// re-hashing 140MB when nothing changed.
+fn dir_mtime(dir: &std::path::Path) -> Option<std::time::SystemTime> {
+    let mut newest: Option<std::time::SystemTime> = None;
+    let mut scan = |d: &std::path::Path| {
+        if let Ok(entries) = std::fs::read_dir(d) {
+            for e in entries.flatten() {
+                if let Ok(m) = e.metadata() {
+                    if let Ok(t) = m.modified() {
+                        newest = Some(newest.map_or(t, |cur| cur.max(t)));
+                    }
+                }
+            }
+        }
+    };
+    scan(dir);
+    scan(&dir.join("zw-assets"));
+    newest
+}
+
+static MANIFEST_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Vec<BinaryEntry>)>>,
+> = std::sync::OnceLock::new();
+
+/// Cached manifest: re-hashes only when the dir mtime moved. The binaries
+/// folder holds ~140MB — hashing it on every supervisor poll burns host CPU.
+pub fn manifest_cached(dir: &std::path::Path) -> Vec<BinaryEntry> {
+    let mtime = dir_mtime(dir);
+    if let Some(cache) = MANIFEST_CACHE.get() {
+        if let Ok(guard) = cache.lock() {
+            if let Some((t, entries)) = guard.get(dir) {
+                if *t == mtime {
+                    return entries.clone();
+                }
+            }
+        }
+    }
+    let entries = manifest(dir);
+    let cache = MANIFEST_CACHE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(dir.to_path_buf(), (mtime, entries.clone()));
+    }
+    entries
+}
+
 /// Walk the binaries dir (top level + one `zw-assets/` subdir) into a
 /// manifest. Missing dir = empty manifest (nothing to demand yet).
 pub fn manifest(dir: &std::path::Path) -> Vec<BinaryEntry> {

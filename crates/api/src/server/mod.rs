@@ -342,6 +342,12 @@ async fn dispatch(
         ("PUT", ["api", "admin", "binaries", "file"]) => {
             admin::binaries_upload(state, req).await
         }
+        ("POST", ["api", "admin", "binaries", "push"]) => {
+            admin::binaries_push(state, req).await
+        }
+        ("POST", ["api", "admin", "binaries", "push-bulk"]) => {
+            admin::binaries_push_bulk(state, req).await
+        }
         ("GET", ["api", "admin", "tenants", _, "disk"]) => {
             admin::tenant_disk_show(state, req).await
         }

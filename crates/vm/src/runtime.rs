@@ -422,6 +422,39 @@ impl VmRuntime {
         Ok(written)
     }
 
+    /// Drop the guest's binaries version stamp (`versions.json`) via offline
+    /// loop mount so the next boot re-demands every binary from the wrapper.
+    /// This is the admin "push binaries" path: binaries otherwise NEVER move
+    /// on their own (no auto-sync — host CPU/RAM). VM must be down (socket
+    /// absent); caller kills first. Returns true when a stamp was removed.
+    pub async fn drop_binaries_versions(&self, tenant_id: &str) -> anyhow::Result<bool> {
+        let image = self.data_disk_path(tenant_id)?;
+        if !image.exists() {
+            anyhow::bail!("no data disk for tenant");
+        }
+        if crate::runtime::fc_socket_path(tenant_id).exists() {
+            anyhow::bail!("vm must be shut down before binaries push (socket present)");
+        }
+        let mnt = format!("/tmp/mnt-bin-{tenant_id}");
+        std::fs::create_dir_all(&mnt)?;
+        let st = tokio::process::Command::new("mount")
+            .args(["-o", "loop", &image.to_string_lossy(), &mnt])
+            .status()
+            .await?;
+        if !st.success() {
+            let _ = std::fs::remove_dir(&mnt);
+            anyhow::bail!("mount loop failed for binaries push");
+        }
+        let stamp = std::path::Path::new(&mnt).join("supervisor/binaries/versions.json");
+        let removed = stamp.exists() && std::fs::remove_file(&stamp).is_ok();
+        let _ = tokio::process::Command::new("umount")
+            .arg(&mnt)
+            .status()
+            .await;
+        let _ = std::fs::remove_dir(&mnt);
+        Ok(removed)
+    }
+
     /// Flush the guest's page cache over SSH (`sync`) so a subsequent kill
     /// lands on a quiescent filesystem. Best-effort with a short timeout:
     /// failure falls back to kill-only (journal replay), never blocks.
@@ -892,18 +925,38 @@ impl VmRuntime {
     /// needs root + iptables.
     fn enable_forwarding_best_effort(telemetry: &Telemetry, vm_ip: &str) {
         let cidr = format!("{}/24", gateway_for_ip(vm_ip));
-        let steps: &[(&str, &[&str])] = &[
-            ("sysctl", &["-w", "net.ipv4.ip_forward=1"]),
+        // `-C` check before `-A`: blind appends pile hundreds of duplicate
+        // rules across boots and burn host CPU on every packet.
+        let steps: &[(&str, &[&str], &[&str])] = &[
+            ("sysctl", &["-w", "net.ipv4.ip_forward=1"], &[]),
             (
                 "iptables",
                 &[
                     "-t", "nat", "-A", "POSTROUTING", "-s", &cidr, "-j", "MASQUERADE",
                 ],
+                &[
+                    "-t", "nat", "-C", "POSTROUTING", "-s", &cidr, "-j", "MASQUERADE",
+                ],
             ),
-            ("iptables", &["-A", "FORWARD", "-s", &cidr, "-j", "ACCEPT"]),
+            (
+                "iptables",
+                &["-A", "FORWARD", "-s", &cidr, "-j", "ACCEPT"],
+                &["-C", "FORWARD", "-s", &cidr, "-j", "ACCEPT"],
+            ),
         ];
         // NOTE: `cidr` is borrowed by `steps`; keep it alive for the loop.
-        for (bin, args) in steps {
+        for (bin, args, check) in steps {
+            if !check.is_empty()
+                && std::process::Command::new(bin)
+                    .args(*check)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            {
+                continue;
+            }
             let ok = std::process::Command::new(bin)
                 .args(*args)
                 .stdout(std::process::Stdio::null())
