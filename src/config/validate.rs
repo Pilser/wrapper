@@ -17,7 +17,11 @@ pub fn validate(cfg: &Config) -> Result<()> {
         return Err(Error::Config("wrapper.port must be non-zero".into()));
     }
     non_empty(&cfg.wrapper.bind_address, "wrapper.bind_address")?;
-    non_empty(&cfg.firecracker.binary_path, "firecracker.binary_path")?;
+    non_empty(&cfg.docker.image, "docker.image")?;
+    non_empty(&cfg.docker.network, "docker.network")?;
+    non_empty(&cfg.docker.subnet, "docker.subnet")?;
+    non_empty(&cfg.docker.gateway, "docker.gateway")?;
+    non_empty(&cfg.docker.tenant_data_root, "docker.tenant_data_root")?;
     non_empty(&cfg.network.ip_range, "network.ip_range")?;
     non_empty(&cfg.network.gateway, "network.gateway")?;
     non_empty(&cfg.database.global_path, "database.global_path")?;

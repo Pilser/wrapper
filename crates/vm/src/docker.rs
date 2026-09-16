@@ -41,7 +41,7 @@ pub struct DockerDriver {
 impl DockerDriver {
     pub fn connect(image: impl Into<String>, network: impl Into<String>) -> anyhow::Result<Self> {
         let docker = Docker::connect_with_local_defaults()
-            .map_err(|e| anyhow::anyhow!("connect to local docker: {e}"));
+            .map_err(|e| anyhow::anyhow!("connect to local docker: {e}"))?;
         Ok(Self {
             docker,
             image: image.into(),
@@ -118,7 +118,7 @@ impl DockerDriver {
         endpoints.insert(
             self.network.clone(),
             EndpointSettings {
-                ipam_config: Some(EndpointIPAMConfig {
+                ipam_config: Some(EndpointIpamConfig {
                     ipv4_address: Some(ip.to_string()),
                     ..Default::default()
                 }),
@@ -137,7 +137,8 @@ impl DockerDriver {
                 ..Default::default()
             }),
             networking_config: Some(NetworkingConfig {
-                endpoints_config: endpoints,
+                endpoints_config: Some(endpoints),
+                ..Default::default()
             }),
             ..Default::default()
         };

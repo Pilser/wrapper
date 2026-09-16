@@ -593,6 +593,7 @@ impl VmRuntime {
             .await?
             .ok_or_else(|| anyhow::anyhow!("vm template {} not found", category.vm_template_id))
     }
+}
 
 /// Fast TCP probe (800ms) — true when something accepts on `IP:port`.
 async fn probe_tcp(addr: &str) -> bool {

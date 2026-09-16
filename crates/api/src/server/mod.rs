@@ -129,7 +129,6 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         activity,
         public_base: p.public_base,
         idle_timeout_minutes: p.idle_timeout_minutes,
-        disks_dir: p.disks_dir,
         tenant_data_root: p.tenant_data_root,
         binaries_dir: p.binaries_dir,
         system_prompt_host_path: p.system_prompt_host_path,
