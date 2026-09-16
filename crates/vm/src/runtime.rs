@@ -306,27 +306,6 @@ impl VmRuntime {
         }
         Some(dir_size_bytes(&path))
     }
-        let path = self.data_disk_path(tenant_id).ok()?;
-        if !path.exists() {
-            return None;
-        }
-        let out = tokio::process::Command::new("du")
-            .args(["-B1"])
-            .arg(&path)
-            .output()
-            .await
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()
-    }
-
-
 
     /// Sync the agent system prompt into the tenant data folder (always
     /// refresh, `.bak-date` backup). Plain host write — works whether the

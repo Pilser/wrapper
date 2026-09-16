@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bollard::models::{
-    ContainerCreateBody, EndpointIPAMConfig, EndpointSettings, HostConfig, NetworkingConfig,
+    ContainerCreateBody, ContainerCpuStats, ContainerCpuUsage, ContainerMemoryStats,
+    ContainerStatsResponse, EndpointIpamConfig, EndpointSettings, HostConfig, Ipam, IpamConfig,
+    NetworkCreateRequest, NetworkingConfig,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StatsOptionsBuilder,
@@ -56,17 +58,16 @@ impl DockerDriver {
 
     /// Ensure the tenant bridge network exists (subnet set at creation).
     pub async fn ensure_network(&self, subnet: &str, gateway: &str) -> anyhow::Result<()> {
-        match self.docker.inspect_network::<String>(&self.network).await {
+        match self.docker.inspect_network(&self.network, None).await {
             Ok(_) => Ok(()),
             Err(_) => {
-                use bollard::models::{IPAMConfig, Ipam};
                 let res = self
                     .docker
-                    .create_network(bollard::models::CreateNetworkOptions {
+                    .create_network(NetworkCreateRequest {
                         name: self.network.clone(),
                         driver: Some("bridge".to_string()),
                         ipam: Some(Ipam {
-                            config: Some(vec![IPAMConfig {
+                            config: Some(vec![IpamConfig {
                                 subnet: Some(subnet.to_string()),
                                 gateway: Some(gateway.to_string()),
                                 ..Default::default()
@@ -157,7 +158,7 @@ impl DockerDriver {
     pub async fn start(&self, tenant_id: &str) -> anyhow::Result<()> {
         let name = Self::container_name(tenant_id);
         self.docker
-            .start_container::<String>(&name, None)
+            .start_container(&name, None)
             .await
             .map_err(|e| anyhow::anyhow!("start {name}: {e}"))
     }
