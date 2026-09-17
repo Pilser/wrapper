@@ -2559,3 +2559,269 @@ pub async fn binaries_rollback(
     }
     json::ok(serde_json::json!({"name": name, "version_no": version_no, "activated_at": now}))
 }
+
+// --------------------------------------------------------------------- binary scope sync
+/// Write one versioned bundle into a tenant's disk folder (host path), so a
+/// pilot group can run a new version while the rest stays put. Mirrors the
+/// system-prompt sync model: single + bulk (tenant_ids > category_id > all),
+/// restart-when-live, per-tenant results. Whole-folder replace for zw-assets.
+/// The live binaries dir stays the working set; sync never touches it.
+async fn binaries_sync_one(
+    state: &AppState,
+    runtime: &vm::runtime::VmRuntime,
+    tenant_id: &str,
+    name: &str,
+    version_no: i64,
+) -> serde_json::Value {
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return serde_json::json!({"tenant_id": tenant_id, "error": "db unavailable"}),
+    };
+    let row = match db::global::binary_versions::get(&conn, name, version_no).await {
+        Ok(Some(r)) => r,
+        _ => return serde_json::json!({"tenant_id": tenant_id, "error": format!("no version v{version_no} for {name}")}),
+    };
+    let dir = std::path::PathBuf::from(&state.binaries_dir);
+    let snap = snapshot_unit_path(&dir, name, version_no);
+    if !snap.exists() {
+        return serde_json::json!({"tenant_id": tenant_id, "error": format!("snapshot v{version_no} for {name} missing on disk")});
+    }
+    let disk = match runtime.data_disk_path(tenant_id) {
+        Ok(p) => p,
+        Err(e) => return serde_json::json!({"tenant_id": tenant_id, "error": e.to_string()}),
+    };
+    let guest = disk.join("supervisor").join("binaries").join(name);
+    let was_live = runtime.is_container_live(tenant_id).await;
+    // Whole-unit replace (dir: remove + copy; file: copy over).
+    let written = if snap.is_dir() {
+        let _ = std::fs::remove_dir_all(&guest);
+        copy_unit(&snap, &guest).is_ok()
+    } else {
+        copy_unit(&snap, &guest).is_ok()
+    };
+    if !written {
+        if was_live {
+            state.activity.touch(tenant_id);
+            let _ = runtime.ensure_running(tenant_id).await;
+        }
+        return serde_json::json!({"tenant_id": tenant_id, "error": "write to tenant disk failed"});
+    }
+    // Re-pin the guest versions.json from the synced version's manifest.
+    if let Ok(text) = std::fs::read_to_string(guest.parent().unwrap_or(&guest).join("versions.json")) {
+        if let Ok(mut pins) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text) {
+            if let Ok(manifest) = serde_json::from_str::<Vec<serde_json::Value>>(&row.manifest_json) {
+                for e in manifest {
+                    if let (Some(p), Some(h)) = (
+                        e.get("path").and_then(|v| v.as_str()),
+                        e.get("sha256").and_then(|v| v.as_str()),
+                    ) {
+                        // Manifest paths ("zw", "zw-assets/<f>") match guest
+                        // pin keys exactly.
+                        pins.insert(p.to_string(), serde_json::Value::String(h.to_string()));
+                    }
+                }
+                let _ = std::fs::write(
+                    guest.parent().unwrap_or(&guest).join("versions.json"),
+                    serde_json::to_string(&pins).unwrap_or_default(),
+                );
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if !snap.is_dir() {
+            let _ = std::fs::set_permissions(&guest, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let ip = if was_live {
+        state.activity.touch(tenant_id);
+        runtime.restart_container(tenant_id).await;
+        runtime
+            .ensure_running(tenant_id)
+            .await
+            .ok()
+            .and_then(|a| a.split(':').next().map(str::to_string))
+    } else {
+        None
+    };
+    serde_json::json!({
+        "tenant_id": tenant_id, "name": name, "version_no": version_no,
+        "written": true, "re_waked": ip.is_some(), "ip": ip,
+    })
+}
+
+/// POST /api/admin/binaries/sync {tenant_id, name, version_no} -> single result.
+pub async fn binaries_sync(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let tenant_id = body.get("tenant_id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let version_no = body.get("version_no").and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64))).unwrap_or(0);
+    if tenant_id.is_empty() || versioned_unit(&name).is_none() || version_no < 1 {
+        return json::bad_request("tenant_id, name (zw|engram|zw-assets) and version_no required");
+    }
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    json::ok(binaries_sync_one(state, &runtime, &tenant_id, &name, version_no).await)
+}
+
+/// POST /api/admin/binaries/sync-bulk {name, version_no, tenant_ids?[], category_id?, all?}
+/// -> {results:[...]}. Sequential, like workspace sync-bulk.
+pub async fn binaries_sync_bulk(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let version_no = body.get("version_no").and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64))).unwrap_or(0);
+    if versioned_unit(&name).is_none() || version_no < 1 {
+        return json::bad_request("name (zw|engram|zw-assets) and version_no required");
+    }
+    let tenant_ids: Vec<String> = if let Some(arr) = body.get("tenant_ids").and_then(|v| v.as_array()) {
+        arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+    } else if let Some(cat) = body.get("category_id").and_then(|v| v.as_str()) {
+        let conn = match state.gdb.conn() {
+            Ok(c) => c,
+            Err(_) => return json::internal(),
+        };
+        match db::global::tenants::list(&conn).await {
+            Ok(rows) => rows.into_iter().filter(|t| t.category_id == cat).map(|t| t.id).collect(),
+            Err(_) => return json::internal(),
+        }
+    } else if body.get("all").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let conn = match state.gdb.conn() {
+            Ok(c) => c,
+            Err(_) => return json::internal(),
+        };
+        match db::global::tenants::list(&conn).await {
+            Ok(rows) => rows.into_iter().map(|t| t.id).collect(),
+            Err(_) => return json::internal(),
+        }
+    } else {
+        return json::bad_request("provide tenant_ids[] or category_id or all:true");
+    };
+    if tenant_ids.is_empty() {
+        return json::ok(serde_json::json!({"results": [], "name": name, "version_no": version_no}));
+    }
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    let mut results = Vec::new();
+    for tid in tenant_ids {
+        results.push(binaries_sync_one(state, &runtime, &tid, &name, version_no).await);
+    }
+    json::ok(serde_json::json!({"results": results, "name": name, "version_no": version_no}))
+}
+
+/// GET /api/admin/binaries/effective?tenant_id= -> {bundles:{name:{version_no?,state}}}.
+/// Resolves what a tenant actually runs by matching guest pins against known
+/// version manifests (newest first), else the live working set, else custom.
+pub async fn binaries_effective(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let tenant_id = req
+        .uri()
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .find_map(|pair| {
+            let mut it = pair.splitn(2, '=');
+            (it.next() == Some("tenant_id")).then(|| it.next().unwrap_or("").to_string())
+        })
+        .unwrap_or_default();
+    if tenant_id.trim().is_empty() {
+        return json::bad_request("missing ?tenant_id=");
+    }
+    let runtime = match &state.runtime {
+        Some(r) => r.clone(),
+        None => return json::unavailable("vm runtime not configured"),
+    };
+    let disk = match runtime.data_disk_path(&tenant_id) {
+        Ok(p) => p,
+        Err(e) => return json::bad_request(e.to_string()),
+    };
+    let pins: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(
+        disk.join("supervisor").join("binaries").join("versions.json"),
+    )
+    .ok()
+    .and_then(|t| serde_json::from_str(&t).ok())
+    .unwrap_or_default();
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    let dir = std::path::PathBuf::from(&state.binaries_dir);
+    let mut bundles = serde_json::Map::new();
+    for name in ["zw", "engram", "zw-assets"] {
+        // Guest pins for this bundle (manifest keys are unit-relative).
+        let guest: std::collections::HashMap<String, String> = pins
+            .iter()
+            .filter(|(k, _)| *k == name || k.starts_with(&format!("{name}/")))
+            .filter_map(|(k, v)| v.as_str().map(|h| (k.clone(), h.to_string())))
+            .collect();
+        let mut resolved = serde_json::json!({"state": "unknown"});
+        if !guest.is_empty() {
+            if let Ok(rows) = db::global::binary_versions::list(&conn, name).await {
+                for r in rows {
+                    if let Ok(manifest) = serde_json::from_str::<Vec<serde_json::Value>>(&r.manifest_json) {
+                        let want: Vec<(String, String)> = manifest
+                            .iter()
+                            .filter_map(|e| {
+                                Some((
+                                    e.get("path")?.as_str()?.to_string(),
+                                    e.get("sha256")?.as_str()?.to_string(),
+                                ))
+                            })
+                            .collect();
+                        if !want.is_empty()
+                            && want.iter().all(|(p, h)| guest.get(p).is_some_and(|g| g == h))
+                        {
+                            resolved = serde_json::json!({"version_no": r.version_no, "state": "versioned"});
+                            break;
+                        }
+                    }
+                }
+            }
+            if resolved.get("state").and_then(|v| v.as_str()) == Some("unknown") {
+                let live: std::collections::HashMap<String, String> = unit_manifest(&dir, name)
+                    .into_iter()
+                    .filter_map(|e| {
+                        Some((
+                            e.get("path")?.as_str()?.to_string(),
+                            e.get("sha256")?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect();
+                if !live.is_empty() && live.iter().all(|(p, h)| guest.get(p).is_some_and(|g| g == h)) {
+                    resolved = serde_json::json!({"state": "live"});
+                } else {
+                    resolved = serde_json::json!({"state": "custom"});
+                }
+            }
+        }
+        bundles.insert(name.to_string(), resolved);
+    }
+    json::ok(serde_json::json!({"tenant_id": tenant_id, "bundles": bundles}))
+}
