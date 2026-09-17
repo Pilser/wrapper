@@ -2417,7 +2417,8 @@ pub async fn binaries_merge(
     let marker = dir.join(".incoming").join(&name).with_extension("upload_started");
     let uploaded_at = std::fs::read_to_string(&marker)
         .ok()
-        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(shared::now_rfc3339);
     let now = shared::now_rfc3339();
     let live = live_unit_path(&dir, &name);
