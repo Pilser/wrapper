@@ -104,7 +104,7 @@ pub fn with_cors(mut res: ApiResponse) -> ApiResponse {
     );
     res.headers_mut().insert(
         hyper::header::ACCESS_CONTROL_ALLOW_HEADERS,
-        hyper::header::HeaderValue::from_static("Authorization, Content-Type"),
+        hyper::header::HeaderValue::from_static("Authorization, Content-Type, X-Content-Sha256"),
     );
     res.headers_mut().insert(
         hyper::header::ACCESS_CONTROL_MAX_AGE,
