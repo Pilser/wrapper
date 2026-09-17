@@ -317,8 +317,10 @@ pub async fn handle_hub_op(
             if path.is_empty() || path.starts_with('.') || path.contains("..") {
                 return Err(Error::InvalidInput("bad engram path".to_string()));
             }
+            // A JSON null body counts as absent (typed CLIs send explicit nulls).
+            let has_body = payload.get("body").is_some_and(|b| !b.is_null());
             let method = arg("method").unwrap_or_else(|| {
-                if payload.get("body").is_some() { "POST".to_string() } else { "GET".to_string() }
+                if has_body { "POST".to_string() } else { "GET".to_string() }
             }).to_uppercase();
             if method != "GET" && method != "POST" {
                 return Err(Error::InvalidInput("engram method must be GET or POST".to_string()));
@@ -335,7 +337,7 @@ pub async fn handle_hub_op(
                 .map_err(|e| Error::Internal(e.to_string()))?;
             let req = if method == "POST" {
                 let mut r = client.post(&url);
-                if let Some(body) = payload.get("body") {
+                if let Some(body) = payload.get("body").filter(|b| !b.is_null()) {
                     r = r.json(body);
                 }
                 r
