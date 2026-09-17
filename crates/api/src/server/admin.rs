@@ -2020,3 +2020,132 @@ pub async fn disks_list(
     out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     json::ok(serde_json::json!({"disks": out, "dir": dir}))
 }
+
+// --------------------------------------------------------------------- hub
+/// GET /api/admin/hub/grants?owner=<tenant_id> -> {grants, codes, blocked}.
+/// Admin view of who can reach an owner's portfolio (grants + active token
+/// share metadata; codes themselves are hashed and unrecoverable).
+pub async fn hub_grants_list(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let owner = req
+        .uri()
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .find_map(|pair| {
+            let mut it = pair.splitn(2, '=');
+            (it.next() == Some("owner")).then(|| it.next().unwrap_or("").to_string())
+        })
+        .unwrap_or_default();
+    if owner.trim().is_empty() {
+        return json::bad_request("missing ?owner=<tenant_id>");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    let rows = match db::global::hub::list_owner(&conn, &owner).await {
+        Ok(r) => r,
+        Err(_) => return json::internal(),
+    };
+    let now = shared::now_rfc3339();
+    let mut grants = Vec::new();
+    let mut codes = Vec::new();
+    for r in rows {
+        if r.revoked || db::global::hub::is_expired(&r.expires_at, &now) {
+            continue;
+        }
+        if let Some(t) = r.grantee_tenant {
+            let username = db::global::tenants::get_by_id(&conn, &t)
+                .await
+                .ok()
+                .flatten()
+                .map(|u| u.username);
+            grants.push(serde_json::json!({
+                "tenant": t, "username": username,
+                "created_at": r.created_at, "expires_at": r.expires_at,
+            }));
+        } else {
+            codes.push(serde_json::json!({
+                "created_at": r.created_at, "expires_at": r.expires_at,
+            }));
+        }
+    }
+    let blocked = db::global::hub::list_blocks(&conn, &owner).await.unwrap_or_default();
+    json::ok(serde_json::json!({"owner": owner, "grants": grants, "codes": codes, "blocked": blocked}))
+}
+
+/// POST /api/admin/hub/grants {owner_tenant, grantee_tenant, expires_at?}
+/// -> 201. Admin-created direct grant. The owner may still revoke it from
+/// the hub CLI (`grant_revoke`) or veto via blocklist; admin superiority
+/// is re-grant power + full visibility here.
+pub async fn hub_grants_create(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let owner = str_field(&body, "owner_tenant").unwrap_or_default();
+    let grantee = str_field(&body, "grantee_tenant").unwrap_or_default();
+    let expires_at = str_field(&body, "expires_at").filter(|s| !s.trim().is_empty());
+    if owner.trim().is_empty() || grantee.trim().is_empty() {
+        return json::bad_request("owner_tenant and grantee_tenant are required");
+    }
+    if owner == grantee {
+        return json::bad_request("owner and grantee must differ");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    for id in [&owner, &grantee] {
+        match db::global::tenants::get_by_id(&conn, id).await {
+            Ok(Some(_)) => {}
+            _ => return json::bad_request(format!("unknown tenant {id}")),
+        }
+    }
+    if db::global::hub::is_blocked(&conn, &owner, &grantee).await.unwrap_or(false) {
+        return json::bad_request("owner blocked this tenant (unblock first)");
+    }
+    match db::global::hub::create(&conn, &owner, Some(&grantee), None, expires_at.as_deref()).await {
+        Ok(id) => json::created(serde_json::json!({"id": id, "owner": owner, "grantee": grantee})),
+        Err(_) => json::internal(),
+    }
+}
+
+/// DELETE /api/admin/hub/grants {owner_tenant, grantee_tenant} -> {revoked}.
+pub async fn hub_grants_delete(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let owner = str_field(&body, "owner_tenant").unwrap_or_default();
+    let grantee = str_field(&body, "grantee_tenant").unwrap_or_default();
+    if owner.trim().is_empty() || grantee.trim().is_empty() {
+        return json::bad_request("owner_tenant and grantee_tenant are required");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    match db::global::hub::revoke_grant(&conn, &owner, &grantee).await {
+        Ok(revoked) => json::ok(serde_json::json!({"revoked": revoked})),
+        Err(_) => json::internal(),
+    }
+}

@@ -17,6 +17,9 @@ pub struct ListenerState {
     pub auth: auth::AuthService,
     /// Fed on every heartbeat envelope: drives admin liveness + idle math.
     pub activity: proxy::ActivityMap,
+    /// Shared container runtime (same instance as the HTTP API: one IpPool).
+    /// None in degraded mode (docker down) — hub.activate then refuses.
+    pub runtime: Option<vm::runtime::VmRuntime>,
 }
 
 /// Bind and serve JSON-over-TCP supervisor connections forever.
@@ -26,6 +29,7 @@ pub async fn serve(
     db: db::Db,
     auth: auth::AuthService,
     activity: proxy::ActivityMap,
+    runtime: Option<vm::runtime::VmRuntime>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     telemetry
@@ -40,6 +44,7 @@ pub async fn serve(
         db,
         auth,
         activity,
+        runtime,
     });
     loop {
         let (socket, peer) = listener.accept().await?;
@@ -92,7 +97,7 @@ pub async fn handle_connection(
             writer_half.write_all(b"\n").await?;
             continue;
         }
-        let response = handle_line(trimmed, &state).await;
+        let response = handle_line(trimmed, &peer, &state).await;
         let out = response.to_line()?;
         writer_half.write_all(out.as_bytes()).await?;
         writer_half.write_all(b"\n").await?;
@@ -108,7 +113,7 @@ pub async fn handle_connection(
     Ok(())
 }
 
-async fn handle_line(line: &str, state: &ListenerState) -> Envelope {
+async fn handle_line(line: &str, peer: &str, state: &ListenerState) -> Envelope {
     let envelope = match Envelope::from_line(line) {
         Ok(e) => e,
         Err(e) => {
@@ -135,7 +140,7 @@ async fn handle_line(line: &str, state: &ListenerState) -> Envelope {
     // heartbeat sender is still unwired; its 60s tools.granted poll and
     // every tool call touch here instead.)
     state.activity.touch(&envelope.tenant_id);
-    match handler::dispatch(&envelope, &state.db, &state.telemetry).await {
+    match handler::dispatch(&envelope, &state.db, &state.telemetry, peer, &state.runtime).await {
         Ok(payload) => envelope.respond("response", payload),
         Err(e) => envelope.respond("error", serde_json::json!({"error": e.to_string()})),
     }

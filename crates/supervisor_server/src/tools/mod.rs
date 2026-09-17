@@ -1,3 +1,4 @@
+pub mod hub;
 pub mod portfolio;
 
 pub use portfolio::handle_portfolio_call;

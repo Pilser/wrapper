@@ -19,7 +19,7 @@ impl McpServer {
     }
 
     pub async fn handle_envelope(&self, envelope: &Envelope) -> Envelope {
-        match super::handler::dispatch(envelope, &self.db, &self.telemetry).await {
+        match super::handler::dispatch(envelope, &self.db, &self.telemetry, "", &None).await {
             Ok(payload) => super::handler::success_response(envelope, payload),
             Err(e) => super::handler::error_response(envelope, &e),
         }

@@ -39,8 +39,9 @@ impl ServerConfig {
         db: db::Db,
         auth: auth::AuthService,
         activity: proxy::ActivityMap,
+        runtime: Option<vm::runtime::VmRuntime>,
     ) -> Result<()> {
-        listener::tcp::serve(&self.addr(), telemetry, db, auth, activity).await
+        listener::tcp::serve(&self.addr(), telemetry, db, auth, activity, runtime).await
     }
 }
 

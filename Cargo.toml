@@ -10,6 +10,7 @@ db = { path = "crates/db" }
 proxy = { path = "crates/proxy" }
 shared = { path = "crates/shared" }
 supervisor_server = { path = "crates/supervisor_server" }
+vm = { path = "crates/vm" }
 telemetry = { path = "crates/telemetry" }
 turso = { workspace = true }
 tokio = { workspace = true }

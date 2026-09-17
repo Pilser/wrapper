@@ -173,6 +173,52 @@ async fn async_main() -> anyhow::Result<()> {
         ))
         .emit();
 
+    // 8b. One shared container runtime for BOTH the supervisor TCP
+    // listener (hub.activate) and the HTTP API below. Sharing is mandatory:
+    // IpPool is in-memory, so two runtimes would double-allocate IPs.
+    // Absolute: docker bind sources must be absolute paths (the daemon
+    // rejects relative ones). Resolved against the wrapper cwd.
+    let tenant_data_root = std::path::Path::new(&cfg.docker.tenant_data_root)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| {
+            std::env::current_dir()
+                .map(|c| c.join(&cfg.docker.tenant_data_root).to_string_lossy().to_string())
+                .unwrap_or_else(|_| cfg.docker.tenant_data_root.clone())
+        });
+    let _ = std::fs::create_dir_all(&tenant_data_root);
+    let shared_runtime: Option<vm::runtime::VmRuntime> =
+        match vm::docker::DockerDriver::connect(&cfg.docker.image, &cfg.docker.network) {
+            Ok(docker) => match vm::runtime::VmRuntime::new(
+                docker,
+                gdb.clone(),
+                net_cfg.clone(),
+                telemetry.clone(),
+                cfg.docker.network.clone(),
+                cfg.docker.subnet.clone(),
+                cfg.docker.gateway.clone(),
+                tenant_data_root.clone(),
+            )
+            .map(|r| r.with_system_prompt_host_path(cfg.vm.system_prompt_host_path.clone()))
+            {
+                Ok(rt) => {
+                    match rt.premark_reserved().await {
+                        Ok(n) => telemetry.builder().level(Level::Info).kind("vm.pool.premarked").category("vm").source("wrapper::main").message(format!("pool pre-marked with {n} reserved addresses")).emit(),
+                        Err(e) => telemetry.builder().level(Level::Warn).kind("vm.pool.premark_failed").category("vm").source("wrapper::main").message(format!("pool pre-mark failed: {e}")).emit(),
+                    }
+                    Some(rt)
+                }
+                Err(e) => {
+                    telemetry.builder().level(Level::Warn).kind("vm.runtime.failed").category("vm").source("wrapper::main").message(format!("container runtime unavailable: {e}")).emit();
+                    None
+                }
+            },
+            Err(e) => {
+                telemetry.builder().level(Level::Warn).kind("vm.runtime.failed").category("vm").source("wrapper::main").message(format!("docker unavailable: {e}")).emit();
+                None
+            }
+        };
+
     // 9. supervisor_server::start() → listen for supervisor connections.
     // Serves db_read/db_write envelopes for in-VM supervisor MCP tools.
     let supervisor_config = api::supervisor::ServerConfig {
@@ -205,8 +251,9 @@ async fn async_main() -> anyhow::Result<()> {
         };
         let srv_auth = auth::AuthService::new(telemetry.clone());
         let srv_activity = activity.clone();
+        let srv_runtime = shared_runtime.clone();
         tokio::spawn(async move {
-            if let Err(e) = srv_cfg.start(srv_tel, srv_db, srv_auth, srv_activity).await {
+            if let Err(e) = srv_cfg.start(srv_tel, srv_db, srv_auth, srv_activity, srv_runtime).await {
                 err_tel.builder()
                     .level(Level::Error)
                     .kind("supervisor.serve.failed")
@@ -317,17 +364,6 @@ async fn async_main() -> anyhow::Result<()> {
     // frontend) with everything else proxied to the tenant's zw.
     // Runs as a background task; the event loop below still owns shutdown.
     let serve_bind = format!("{}:{}", cfg.wrapper.bind_address, cfg.wrapper.port);
-    // Absolute: docker bind sources must be absolute paths (the daemon
-    // rejects relative ones). Resolved against the wrapper cwd.
-    let tenant_data_root = std::path::Path::new(&cfg.docker.tenant_data_root)
-        .canonicalize()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| {
-            std::env::current_dir()
-                .map(|c| c.join(&cfg.docker.tenant_data_root).to_string_lossy().to_string())
-                .unwrap_or_else(|_| cfg.docker.tenant_data_root.clone())
-        });
-    let _ = std::fs::create_dir_all(&tenant_data_root);
     let telemetry_dir = std::path::Path::new(&cfg.telemetry.disk.path)
         .canonicalize()
         .map(|p| p.to_string_lossy().to_string())
@@ -344,6 +380,7 @@ async fn async_main() -> anyhow::Result<()> {
         docker_gateway: cfg.docker.gateway.clone(),
         public_base: cfg.api.public_base.clone(),
         tenant_data_root,
+        runtime: shared_runtime,
         binaries_dir: cfg.binaries.dir.clone(),
         system_prompt_host_path: cfg.vm.system_prompt_host_path.clone(),
         idle_timeout_minutes: cfg.vm.idle_timeout_minutes,

@@ -59,6 +59,25 @@ CREATE TABLE IF NOT EXISTS launcher_scripts (
     scope TEXT NOT NULL, ref_id TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL, content TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (scope, ref_id, name));
+-- Cross-tenant portfolio sharing (hubportfolio CLI, never MCP).
+-- Two row kinds: direct grants (grantee_tenant set, code_hash NULL —
+-- created by owner via hub CLI or by admin via portal, admin rows are
+-- superior and only admin/owner-block can remove them) and token shares
+-- (grantee_tenant NULL, code_hash = sha256 hex of a short owner-made
+-- code). expires_at NULL = never expires. revoked = soft delete so the
+-- owner keeps a history of who had access.
+CREATE TABLE IF NOT EXISTS hub_shares (
+    id TEXT PRIMARY KEY, owner_tenant TEXT NOT NULL,
+    grantee_tenant TEXT, code_hash TEXT,
+    scope TEXT NOT NULL DEFAULT 'edit',
+    expires_at TEXT, revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_hub_shares_owner ON hub_shares (owner_tenant);
+-- Owner blocklist: overrides grants AND tokens (even admin grants).
+CREATE TABLE IF NOT EXISTS hub_blocks (
+    owner_tenant TEXT NOT NULL, blocked_tenant TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (owner_tenant, blocked_tenant));
 "#;
 
 pub async fn migrate(conn: &turso::Connection) -> anyhow::Result<()> {

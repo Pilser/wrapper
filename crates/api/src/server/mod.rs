@@ -73,6 +73,9 @@ pub struct ServeParams {
     pub public_base: String,
     /// Host root holding one folder per tenant (bind-mounted at `/data`).
     pub tenant_data_root: String,
+    /// Prebuilt container runtime shared with the supervisor TCP listener.
+    /// None = build one here (old path, with pool pre-mark).
+    pub runtime: Option<vm::runtime::VmRuntime>,
     /// Host dir with versioned guest binaries + zw assets (config
     /// `[binaries]`). Portal uploads land here; supervisors demand them.
     pub binaries_dir: String,
@@ -87,39 +90,48 @@ pub struct ServeParams {
 /// else through the zw reverse proxy. Spawns the idle reaper when the
 /// timeout is non-zero.
 pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
-    let docker =
-        vm::docker::DockerDriver::connect(&p.docker_image, &p.docker_network)
-            .map_err(|e| anyhow::anyhow!("docker unavailable: {e}"))?;
-    let runtime = vm::runtime::VmRuntime::new(
-        docker,
-        p.gdb.clone(),
-        p.net_cfg,
-        p.telemetry.clone(),
-        p.docker_network.clone(),
-        p.docker_subnet.clone(),
-        p.docker_gateway.clone(),
-        p.tenant_data_root.clone(),
-    )?
-    .with_system_prompt_host_path(p.system_prompt_host_path.clone());
+    // Shared runtime from main (same instance as the supervisor TCP
+    // listener) wins; otherwise build one here (old path). Pre-mark runs
+    // exactly once: here only on the old path, in main for a shared one.
+    let runtime = match p.runtime {
+        Some(rt) => rt,
+        None => {
+            let docker =
+                vm::docker::DockerDriver::connect(&p.docker_image, &p.docker_network)
+                    .map_err(|e| anyhow::anyhow!("docker unavailable: {e}"))?;
+            let rt = vm::runtime::VmRuntime::new(
+                docker,
+                p.gdb.clone(),
+                p.net_cfg,
+                p.telemetry.clone(),
+                p.docker_network.clone(),
+                p.docker_subnet.clone(),
+                p.docker_gateway.clone(),
+                p.tenant_data_root.clone(),
+            )?
+            .with_system_prompt_host_path(p.system_prompt_host_path.clone());
+            // Restart recovery BEFORE the runtime moves into handler/state:
+            // never re-allocate an address a live VM still holds.
+            match rt.premark_reserved().await {
+                Ok(n) => p.telemetry
+                    .builder()
+                    .level(telemetry::Level::Info)
+                    .kind("vm.pool.premarked")
+                    .category("vm")
+                    .message(format!("pool pre-marked with {n} reserved addresses"))
+                    .emit(),
+                Err(e) => p.telemetry
+                    .builder()
+                    .level(telemetry::Level::Warn)
+                    .kind("vm.pool.premark_failed")
+                    .category("vm")
+                    .message(format!("pool pre-mark failed: {e}"))
+                    .emit(),
+            }
+            rt
+        }
+    };
     let activity = p.activity.clone();
-    // Restart recovery BEFORE the runtime moves into handler/state: never
-    // re-allocate an address a live VM still holds.
-    match runtime.premark_reserved().await {
-        Ok(n) => p.telemetry
-            .builder()
-            .level(telemetry::Level::Info)
-            .kind("vm.pool.premarked")
-            .category("vm")
-            .message(format!("pool pre-marked with {n} reserved addresses"))
-            .emit(),
-        Err(e) => p.telemetry
-            .builder()
-            .level(telemetry::Level::Warn)
-            .kind("vm.pool.premark_failed")
-            .category("vm")
-            .message(format!("pool pre-mark failed: {e}"))
-            .emit(),
-    }
     let handler = proxy::HttpHandler::new(p.telemetry.clone(), runtime.clone())
         .with_activity(activity.clone());
     let state = AppState {
@@ -274,6 +286,10 @@ async fn dispatch(
             admin::categories_tools_set(state, req).await
         }
         ("GET", ["api", "admin", "tools"]) => admin::tools_catalog(state, req).await,
+        // ---- admin hub (cross-tenant portfolio grants) ----
+        ("GET", ["api", "admin", "hub", "grants"]) => admin::hub_grants_list(state, req).await,
+        ("POST", ["api", "admin", "hub", "grants"]) => admin::hub_grants_create(state, req).await,
+        ("DELETE", ["api", "admin", "hub", "grants"]) => admin::hub_grants_delete(state, req).await,
         // ---- admin fleet ----
         ("GET", ["api", "admin", "vms"]) => admin::vms_list(state, req).await,
         ("POST", ["api", "admin", "vms", _, "shutdown"]) => {

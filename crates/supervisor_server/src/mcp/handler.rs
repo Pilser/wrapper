@@ -5,10 +5,14 @@ use telemetry::{Level, Telemetry};
 use crate::protocol::message::Envelope;
 
 /// Route an incoming envelope to the right subsystem.
+/// `peer` is the TCP peer (`ip:port`) — hub ops use it for caller identity.
+/// `runtime` drives `hub.activate` (None = degraded, no wake).
 pub async fn dispatch(
     envelope: &Envelope,
     db: &db::Db,
     telemetry: &Telemetry,
+    peer: &str,
+    runtime: &Option<vm::runtime::VmRuntime>,
 ) -> Result<Value> {
     envelope.validate()?;
     telemetry
@@ -28,7 +32,12 @@ pub async fn dispatch(
         // Supervisor ProxyClient dialect: {type: db_read/db_write,
         // payload: {op: "memory.save", data: {...}}}. `op` is the dotted
         // tool name dispatch_tool already routes on.
+        // `hub.*` bypasses tool dispatch entirely (CLI-only, own authz).
         "db_read" | "db_write" => {
+            let op = envelope.payload.get("op").and_then(|v| v.as_str()).unwrap_or("");
+            if op.starts_with("hub.") {
+                return crate::tools::hub::handle_hub_op(envelope, peer, db, telemetry, runtime).await;
+            }
             handle_proxy_op(envelope, db, telemetry).await
         }
         // Asked by in-VM supervisors before tools/list: which dotted ops
