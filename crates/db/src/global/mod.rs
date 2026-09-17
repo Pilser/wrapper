@@ -1,5 +1,6 @@
 //! Global database (cross-tenant registry data).
 
+pub mod binary_versions;
 pub mod categories;
 pub mod category_assignments;
 pub mod category_tools;

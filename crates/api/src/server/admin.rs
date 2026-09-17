@@ -1753,22 +1753,36 @@ pub async fn binaries_list(
     json::ok(serde_json::json!({ "dir": dir.to_string_lossy(), "files": files }))
 }
 
-/// PUT /api/admin/binaries/file?path=<rel> with raw octet-stream body
-/// (200MB cap) -> {path, sha256, size}. Portal uploads land instantly in
-/// the configured binaries folder; VMs pick them up on next demand
-/// (boot / crash redemand / Kill). Atomic write (tmp + rename).
+/// PUT /api/admin/binaries/file?path=<rel>[&stage=1] with raw octet-stream
+/// body (200MB cap) -> {path, sha256, size, staged, verified}.
+/// `X-Content-Sha256` (client-computed) is verified against the received
+/// bytes when present: mismatch = 400, nothing lands.
+/// Without stage: lands live instantly (VMs pick up on next demand) and
+/// single-file versioned units auto-snapshot a version.
+/// With stage=1: lands in `.incoming/<rel>` for later diff+merge (folders).
+/// Atomic write (tmp + rename).
 pub async fn binaries_upload(
     state: &AppState,
     req: hyper::Request<hyper::body::Incoming>,
 ) -> ApiResponse {
-    if let Err(e) = auth_ctx::require_admin(state, &req).await {
-        return e;
-    }
+    let staff = match auth_ctx::require_admin(state, &req).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
     let rel = query_param(&req, "path");
     if !shared::binaries::validate_rel(&rel) {
         return json::bad_request("bad path (a-z 0-9 . _ - /, no .., max 128)");
     }
+    let staged = query_param(&req, "stage") == "1";
+    let expected = req
+        .headers()
+        .get("x-content-sha256")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
     use http_body_util::BodyExt;
+    // req borrowed above for headers/query; re-split not needed — headers
+    // were read before consuming the body below.
     let bytes = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => return json::bad_request("unreadable body"),
@@ -1777,8 +1791,28 @@ pub async fn binaries_upload(
     if bytes.len() > LIMIT {
         return json::bad_request("body too large (200MB cap)");
     }
+    let sha = shared::binaries::sha256_bytes(&bytes);
+    if let Some(exp) = expected {
+        if exp != sha {
+            return json::bad_request("corrupt upload (hash mismatch: bytes differ from X-Content-Sha256)");
+        }
+    }
     let dir = std::path::PathBuf::from(&state.binaries_dir);
-    let dst = dir.join(&rel);
+    // Bundle unit for this path: "zw" | "engram" | "zw-assets".
+    let unit = rel.split('/').next().unwrap_or("").to_string();
+    let dst = if staged {
+        // Staging marker records when the first bytes of this bundle landed.
+        let marker = dir.join(".incoming").join(&unit).with_extension("upload_started");
+        if !marker.exists() {
+            if let Some(parent) = marker.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&marker, shared::now_rfc3339());
+        }
+        staging_unit_path(&dir, &unit).join(rel.strip_prefix(&format!("{unit}/")).unwrap_or(&rel))
+    } else {
+        dir.join(&rel)
+    };
     if let Some(parent) = dst.parent() {
         if std::fs::create_dir_all(parent).is_err() {
             return json::internal();
@@ -1797,12 +1831,39 @@ pub async fn binaries_upload(
             let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
         }
     }
-    let entry = shared::binaries::BinaryEntry {
-        path: rel,
-        sha256: shared::binaries::sha256_bytes(&bytes),
-        size: bytes.len() as u64,
-    };
-    json::ok(serde_json::json!({ "path": entry.path, "sha256": entry.sha256, "size": entry.size }))
+    // Live single-file uploads auto-snapshot a version of their whole unit.
+    let mut versioned: Option<i64> = None;
+    if !staged {
+        if versioned_unit(&unit).is_some() {
+            let conn = state.gdb.conn().ok();
+            if let Some(conn) = conn {
+                let now = shared::now_rfc3339();
+                if let Ok(no) = db::global::binary_versions::next_no(&conn, &unit).await {
+                    let live = live_unit_path(&dir, &unit);
+                    let snap = snapshot_unit_path(&dir, &unit, no);
+                    if copy_unit(&live, &snap).is_ok() {
+                        let manifest = serde_json::to_string(&unit_manifest(&dir, &unit))
+                            .unwrap_or_else(|_| "[]".to_string());
+                        let note = format!("upload {rel} {}", &sha[..12.min(sha.len())]);
+                        if db::global::binary_versions::insert(
+                            &conn, &unit, no, &now, &now, &staff.username, &manifest, &note,
+                        )
+                        .await
+                        .is_ok()
+                    {
+                            let _ = db::global::binary_versions::active_set(&conn, &unit, no, &now).await;
+                            let _ = db::global::binary_versions::prune(&conn, &unit).await;
+                            versioned = Some(no);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    json::ok(serde_json::json!({
+        "path": rel, "sha256": sha, "size": bytes.len() as u64,
+        "staged": staged, "verified": true, "version_no": versioned,
+    }))
 }
 
 async fn binaries_push_one(
@@ -2148,4 +2209,353 @@ pub async fn hub_grants_delete(
         Ok(revoked) => json::ok(serde_json::json!({"revoked": revoked})),
         Err(_) => json::internal(),
     }
+}
+
+// --------------------------------------------------------------------- binary versions
+/// Versioned guest binaries (Binaries tab): 5-deep history per bundle with an
+/// active (in-play) pointer. Rollback only moves the pointer — never inserts.
+
+/// Bundle names with history. Single files land live; folders stage first.
+fn versioned_unit(name: &str) -> Option<bool> {
+    match name {
+        "zw" | "engram" => Some(false), // single file
+        "zw-assets" => Some(true),      // directory
+        _ => None,
+    }
+}
+
+fn live_unit_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    dir.join(name)
+}
+
+fn staging_unit_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    dir.join(".incoming").join(name)
+}
+
+fn snapshot_unit_path(dir: &std::path::Path, name: &str, version_no: i64) -> std::path::PathBuf {
+    dir.join(".versions").join(name).join(format!("v{version_no}"))
+}
+
+fn copy_unit(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        for e in std::fs::read_dir(src)? {
+            let e = e?;
+            let name = e.file_name();
+            let d = dst.join(&name);
+            if e.path().is_dir() {
+                copy_unit(&e.path(), &d)?;
+            } else {
+                std::fs::copy(e.path(), d)?;
+            }
+        }
+        Ok(())
+    } else {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dst)?;
+        Ok(())
+    }
+}
+
+/// Manifest entries belonging to one bundle unit.
+fn unit_manifest(dir: &std::path::Path, name: &str) -> Vec<serde_json::Value> {
+    shared::binaries::manifest_cached(dir)
+        .into_iter()
+        .filter(|e| e.path == name || e.path.starts_with(&format!("{name}/")))
+        .map(|e| serde_json::json!({"path": e.path, "sha256": e.sha256, "size": e.size}))
+        .collect()
+}
+
+fn entry_map(dir: &std::path::Path, name: &str, staged: bool) -> std::collections::HashMap<String, (String, u64)> {
+    let base = if staged {
+        staging_unit_path(dir, name)
+    } else {
+        live_unit_path(dir, name)
+    };
+    let mut out = std::collections::HashMap::new();
+    let files: Vec<(String, std::path::PathBuf)> = if base.is_dir() {
+        std::fs::read_dir(&base)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.path().is_file())
+                    .filter_map(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|n| (n.to_string(), e.path()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else if base.is_file() {
+        vec![(name.to_string(), base)]
+    } else {
+        vec![]
+    };
+    for (rel, full) in files {
+        if let Ok(data) = std::fs::read(&full) {
+            out.insert(rel, (shared::binaries::sha256_bytes(&data), data.len() as u64));
+        }
+    }
+    out
+}
+
+/// GET /api/admin/binaries/versions?name= -> {versions, active}.
+pub async fn binary_versions_list(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let name = query_param(&req, "name");
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    let rows = match db::global::binary_versions::list(&conn, &name).await {
+        Ok(r) => r,
+        Err(_) => return json::internal(),
+    };
+    let versions: Vec<_> = rows
+        .into_iter()
+        .map(|r| {
+            let manifest: serde_json::Value =
+                serde_json::from_str(&r.manifest_json).unwrap_or(serde_json::Value::Null);
+            serde_json::json!({
+                "name": r.name, "version_no": r.version_no,
+                "uploaded_at": r.uploaded_at, "merged_at": r.merged_at,
+                "created_by": r.created_by, "manifest": manifest, "note": r.note,
+            })
+        })
+        .collect();
+    let mut active = serde_json::Map::new();
+    for n in ["zw", "engram", "zw-assets"] {
+        if let Ok(Some(v)) = db::global::binary_versions::active_get(&conn, n).await {
+            active.insert(n.to_string(), serde_json::Value::from(v));
+        }
+    }
+    json::ok(serde_json::json!({"versions": versions, "active": active}))
+}
+
+/// POST /api/admin/binaries/diff {name} -> {added, removed, changed, unchanged}.
+/// Compares staged (.incoming) against live. Single-file bundles diff the file.
+pub async fn binaries_diff(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let name = str_field(&body, "name").unwrap_or_default();
+    if versioned_unit(&name).is_none() {
+        return json::bad_request("name must be zw, engram or zw-assets");
+    }
+    let dir = std::path::PathBuf::from(&state.binaries_dir);
+    let staged = entry_map(&dir, &name, true);
+    if staged.is_empty() {
+        return json::bad_request(format!("nothing staged for {name} (upload first)"));
+    }
+    let live = entry_map(&dir, &name, false);
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    let mut unchanged = Vec::new();
+    for (rel, (sha, size)) in &staged {
+        match live.get(rel) {
+            None => added.push(serde_json::json!({"path": rel, "sha256": sha, "size": size})),
+            Some((lsha, _)) if lsha != sha => {
+                changed.push(serde_json::json!({"path": rel, "old_sha256": lsha, "new_sha256": sha, "size": size}))
+            }
+            _ => unchanged.push(rel.clone()),
+        }
+    }
+    for rel in live.keys() {
+        if !staged.contains_key(rel) {
+            removed.push(rel.clone());
+        }
+    }
+    json::ok(serde_json::json!({
+        "name": name, "added": added, "removed": removed,
+        "changed": changed, "unchanged": unchanged,
+    }))
+}
+
+/// POST /api/admin/binaries/merge {name, note?} -> {version_no, uploaded_at,
+/// merged_at, pruned}. Snapshots the merged state as a new version, replaces
+/// live with staging, sets the active pointer. Whole-folder replace: staged
+/// files not in live are added, live files missing from staging are deleted.
+pub async fn binaries_merge(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    let staff = match auth_ctx::require_admin(state, &req).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let name = str_field(&body, "name").unwrap_or_default();
+    let note = str_field(&body, "note").unwrap_or_default();
+    let is_dir = match versioned_unit(&name) {
+        Some(d) => d,
+        None => return json::bad_request("name must be zw, engram or zw-assets"),
+    };
+    let dir = std::path::PathBuf::from(&state.binaries_dir);
+    let staging = staging_unit_path(&dir, &name);
+    if !staging.exists() {
+        return json::bad_request(format!("nothing staged for {name} (upload first)"));
+    }
+    // uploaded_at = staging start marker (first bytes), else now.
+    let marker = dir.join(".incoming").join(&name).with_extension("upload_started");
+    let uploaded_at = std::fs::read_to_string(&marker)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(shared::now_rfc3339);
+    let now = shared::now_rfc3339();
+    let live = live_unit_path(&dir, &name);
+    if is_dir {
+        if live.exists() {
+            let backup = live.with_extension("merge-bak");
+            let _ = std::fs::remove_dir_all(&backup);
+            if std::fs::rename(&live, &backup).is_err() {
+                return json::internal();
+            }
+            if std::fs::rename(&staging, &live).is_err() {
+                let _ = std::fs::rename(&backup, &live);
+                return json::internal();
+            }
+            let _ = std::fs::remove_dir_all(&backup);
+        } else if std::fs::rename(&staging, &live).is_err() {
+            return json::internal();
+        }
+    } else if std::fs::rename(&staging, &live).is_err() {
+        return json::internal();
+    }
+    let _ = std::fs::remove_file(&marker);
+    // Snapshot the merged (live) state as the new version.
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    let version_no = match db::global::binary_versions::next_no(&conn, &name).await {
+        Ok(n) => n,
+        Err(_) => return json::internal(),
+    };
+    let snap = snapshot_unit_path(&dir, &name, version_no);
+    if copy_unit(&live, &snap).is_err() {
+        return json::internal();
+    }
+    // Executables must stay executable for the guest.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if !is_dir {
+            let _ = std::fs::set_permissions(&live, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::set_permissions(&snap.join(&name), std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let manifest = serde_json::to_string(&unit_manifest(&dir, &name)).unwrap_or_else(|_| "[]".to_string());
+    if db::global::binary_versions::insert(
+        &conn, &name, version_no, &uploaded_at, &now, &staff.username, &manifest, &note,
+    )
+    .await
+    .is_err()
+    {
+        return json::internal();
+    }
+    if db::global::binary_versions::active_set(&conn, &name, version_no, &now).await.is_err() {
+        return json::internal();
+    }
+    let pruned = db::global::binary_versions::prune(&conn, &name).await.unwrap_or(0);
+    // Pruned rows lose their snapshot dirs too.
+    if pruned > 0 {
+        if let Ok(rows) = db::global::binary_versions::list(&conn, &name).await {
+            let keep: std::collections::HashSet<i64> = rows.into_iter().map(|r| r.version_no).collect();
+            if let Ok(rd) = std::fs::read_dir(dir.join(".versions").join(&name)) {
+                for e in rd.flatten() {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    if let Some(v) = n.strip_prefix('v').and_then(|x| x.parse::<i64>().ok()) {
+                        if !keep.contains(&v) {
+                            if e.path().is_dir() {
+                                let _ = std::fs::remove_dir_all(e.path());
+                            } else {
+                                let _ = std::fs::remove_file(e.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    json::created(serde_json::json!({
+        "name": name, "version_no": version_no,
+        "uploaded_at": uploaded_at, "merged_at": now, "pruned": pruned,
+    }))
+}
+
+/// POST /api/admin/binaries/rollback {name, version_no} -> {activated_at}.
+/// Restores the snapshot over live and moves the active pointer. No new row.
+pub async fn binaries_rollback(
+    state: &AppState,
+    req: hyper::Request<hyper::body::Incoming>,
+) -> ApiResponse {
+    if let Err(e) = auth_ctx::require_admin(state, &req).await {
+        return e;
+    }
+    let body = match json::read_json(req).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let name = str_field(&body, "name").unwrap_or_default();
+    let version_no = body.get("version_no").and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64))).unwrap_or(0);
+    let is_dir = match versioned_unit(&name) {
+        Some(d) => d,
+        None => return json::bad_request("name must be zw, engram or zw-assets"),
+    };
+    if version_no < 1 {
+        return json::bad_request("version_no required");
+    }
+    let conn = match state.gdb.conn() {
+        Ok(c) => c,
+        Err(_) => return json::internal(),
+    };
+    if db::global::binary_versions::get(&conn, &name, version_no).await.map(|r| r.is_none()).unwrap_or(true) {
+        return json::not_found(format!("no version v{version_no} for {name}"));
+    }
+    let dir = std::path::PathBuf::from(&state.binaries_dir);
+    let snap = snapshot_unit_path(&dir, &name, version_no);
+    if !snap.exists() {
+        return json::not_found(format!("snapshot v{version_no} for {name} missing on disk"));
+    }
+    let live = live_unit_path(&dir, &name);
+    let backup = live.with_extension("rollback-bak");
+    let _ = if live.is_dir() { std::fs::remove_dir_all(&backup).map(|_| ()) } else { std::fs::remove_file(&backup).map(|_| ()) };
+    let moved = if live.exists() { std::fs::rename(&live, &backup).is_ok() } else { true };
+    if !moved || copy_unit(&snap, &live).is_err() {
+        if moved {
+            let _ = std::fs::rename(&backup, &live);
+        }
+        return json::internal();
+    }
+    let _ = if backup.is_dir() { std::fs::remove_dir_all(&backup).map(|_| ()) } else { std::fs::remove_file(&backup).map(|_| ()) };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if !is_dir {
+            let _ = std::fs::set_permissions(&live, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let now = shared::now_rfc3339();
+    if db::global::binary_versions::active_set(&conn, &name, version_no, &now).await.is_err() {
+        return json::internal();
+    }
+    json::ok(serde_json::json!({"name": name, "version_no": version_no, "activated_at": now}))
 }

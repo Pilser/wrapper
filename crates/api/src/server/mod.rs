@@ -286,6 +286,11 @@ async fn dispatch(
             admin::categories_tools_set(state, req).await
         }
         ("GET", ["api", "admin", "tools"]) => admin::tools_catalog(state, req).await,
+        // ---- admin binary versions ----
+        ("GET", ["api", "admin", "binaries", "versions"]) => admin::binary_versions_list(state, req).await,
+        ("POST", ["api", "admin", "binaries", "diff"]) => admin::binaries_diff(state, req).await,
+        ("POST", ["api", "admin", "binaries", "merge"]) => admin::binaries_merge(state, req).await,
+        ("POST", ["api", "admin", "binaries", "rollback"]) => admin::binaries_rollback(state, req).await,
         // ---- admin hub (cross-tenant portfolio grants) ----
         ("GET", ["api", "admin", "hub", "grants"]) => admin::hub_grants_list(state, req).await,
         ("POST", ["api", "admin", "hub", "grants"]) => admin::hub_grants_create(state, req).await,

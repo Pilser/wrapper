@@ -78,6 +78,20 @@ CREATE TABLE IF NOT EXISTS hub_blocks (
     owner_tenant TEXT NOT NULL, blocked_tenant TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (owner_tenant, blocked_tenant));
+-- Guest binary version history (Binaries tab). One row per committed upload:
+-- `name` is 'zw' | 'engram' | 'zw-assets'. uploaded_at = first bytes landed
+-- (staging or live), merged_at = snapshot went live. manifest_json = the
+-- unit's manifest entries at commit time (for old-vs-new compare). Rollback
+-- only moves the active pointer (binary_active) — never inserts a row.
+CREATE TABLE IF NOT EXISTS binary_versions (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, version_no INTEGER NOT NULL,
+    uploaded_at TEXT NOT NULL, merged_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT '', manifest_json TEXT NOT NULL DEFAULT '[]',
+    note TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS idx_binary_versions_name ON binary_versions (name, version_no);
+CREATE TABLE IF NOT EXISTS binary_active (
+    name TEXT PRIMARY KEY, version_no INTEGER NOT NULL,
+    activated_at TEXT NOT NULL);
 "#;
 
 pub async fn migrate(conn: &turso::Connection) -> anyhow::Result<()> {
