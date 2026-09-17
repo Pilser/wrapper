@@ -323,7 +323,11 @@ pub async fn handle_hub_op(
             if method != "GET" && method != "POST" {
                 return Err(Error::InvalidInput("engram method must be GET or POST".to_string()));
             }
-            let ip = target_ip(&gconn, &target).await?;
+            let ip = target_ip(&gconn, &target).await.map_err(|_| {
+                Error::InvalidInput(format!(
+                    "target {target} has no address yet — run `hubportfolio activate {target}` first"
+                ))
+            })?;
             let url = format!("http://{ip}:{ENGRAM_PORT}/{path}");
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
