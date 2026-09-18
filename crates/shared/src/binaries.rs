@@ -16,12 +16,21 @@ pub struct BinaryEntry {
 }
 
 /// Accept only safe relative paths (no escapes, no absolute, sane charset).
+/// Allowed target paths for uploads. Deliberately wide (build outputs carry
+/// spaces, parens, `+`, `@`...): everything except traversal (`..`), absolute
+/// paths, control chars, and URL/shell-breakers (`# ? % $ " \ ` | & * ; < > { } ^).
+/// All transport layers percent-encode, so spaces etc. survive intact.
 pub fn validate_rel(path: &str) -> bool {
     if path.is_empty() || path.len() > 128 || path.starts_with('/') || path.contains("..") {
         return false;
     }
-    path.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+    path.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '.' | '_' | '-' | '/' | ' ' | '!' | '(' | ')' | '[' | ']' | '@' | '=' | ',' | '+' | '~' | '\''
+            )
+    })
 }
 
 pub fn sha256_bytes(data: &[u8]) -> String {

@@ -1804,7 +1804,7 @@ pub async fn binaries_upload(
     };
     let rel = query_param(&req, "path");
     if !shared::binaries::validate_rel(&rel) {
-        return json::bad_request("bad path (a-z 0-9 . _ - /, no .., max 128)");
+        return json::bad_request("bad path (letters, digits, space . _ - / ! ( ) [ ] @ = , + ~ ', no .., max 128)");
     }
     let staged = query_param(&req, "stage") == "1";
     let expected = req
