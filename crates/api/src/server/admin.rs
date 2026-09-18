@@ -1842,7 +1842,15 @@ pub async fn binaries_upload(
             }
             let _ = std::fs::write(&marker, shared::now_rfc3339());
         }
-        staging_unit_path(&dir, &unit).join(rel.strip_prefix(&format!("{unit}/")).unwrap_or(&rel))
+        let base = staging_unit_path(&dir, &unit);
+        // Bare unit names ("zw") stage AS the base path; folder members
+        // ("zw-assets/<f>") stage under it. Joining blindly nests "zw/zw",
+        // which later fails the merge rename onto the live file.
+        if rel == unit {
+            base
+        } else {
+            base.join(rel.strip_prefix(&format!("{unit}/")).unwrap_or(&rel))
+        }
     } else {
         dir.join(&rel)
     };
