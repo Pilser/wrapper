@@ -1431,6 +1431,39 @@ pub async fn workspace_sync_bulk(
 }
 
 // ------------------------------------------------------- system prompt
+/// Percent-decode a query value (`%2F` -> `/`, `+` -> space). The portal
+/// encodes each path segment, so slashes arrive as `%2F` — without this,
+/// every `zw-assets/<file>` upload fails validation on the `%`.
+fn url_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.as_bytes().iter();
+    while let Some(&b) = it.next() {
+        if b == b'%' {
+            let hi = it.next().copied().unwrap_or(b'0');
+            let lo = it.next().copied().unwrap_or(b'0');
+            let hex = |c: u8| match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'a'..=b'f' => Some(c - b'a' + 10),
+                b'A'..=b'F' => Some(c - b'A' + 10),
+                _ => None,
+            };
+            match (hex(hi), hex(lo)) {
+                (Some(h), Some(l)) => out.push((h << 4 | l) as char),
+                _ => {
+                    out.push('%');
+                    out.push(hi as char);
+                    out.push(lo as char);
+                }
+            }
+        } else if b == b'+' {
+            out.push(' ');
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
+}
+
 fn query_param(req: &hyper::Request<hyper::body::Incoming>, key: &str) -> String {
     req.uri()
         .query()
@@ -1440,7 +1473,7 @@ fn query_param(req: &hyper::Request<hyper::body::Incoming>, key: &str) -> String
             let mut it = pair.splitn(2, '=');
             let k = it.next()?;
             let v = it.next().unwrap_or("");
-            (k == key).then(|| v.to_string())
+            (k == key).then(|| url_decode(v))
         })
         .next()
         .unwrap_or_default()
