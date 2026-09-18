@@ -2446,6 +2446,15 @@ pub async fn binaries_merge(
     if !staging.exists() {
         return json::bad_request(format!("nothing staged for {name} (upload first)"));
     }
+    // Never merge an empty staging set: for folders that would delete live.
+    let staged_empty = if staging.is_dir() {
+        std::fs::read_dir(&staging).map(|mut rd| rd.next().is_none()).unwrap_or(true)
+    } else {
+        false
+    };
+    if staged_empty {
+        return json::bad_request(format!("staged {name} is empty — stage files first"));
+    }
     // uploaded_at = staging start marker (first bytes), else now.
     let marker = dir.join(".incoming").join(&name).with_extension("upload_started");
     let uploaded_at = std::fs::read_to_string(&marker)
