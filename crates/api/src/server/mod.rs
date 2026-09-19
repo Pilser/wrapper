@@ -161,7 +161,24 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         .message(format!("wrapper serving /api + zw proxy on {addr}"))
         .emit();
     loop {
-        let (stream, _) = listener.accept().await?;
+        // Never let a transient accept error (e.g. EMFILE under a staging
+        // burst) kill the public listener: back off and keep serving.
+        // Before this, one "Too many open files" took :18080 down until a
+        // manual restart while the process looked alive.
+        let (stream, _) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                p.telemetry
+                    .builder()
+                    .level(telemetry::Level::Warn)
+                    .kind("api.serve.accept_failed")
+                    .category("api")
+                    .message(format!("accept failed ({e}); backing off, listener stays up"))
+                    .emit();
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
+        };
         let state = state.clone();
         let handler = handler.clone();
         tokio::spawn(async move {

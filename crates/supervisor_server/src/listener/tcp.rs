@@ -47,7 +47,23 @@ pub async fn serve(
         runtime,
     });
     loop {
-        let (socket, peer) = listener.accept().await?;
+        // Same resilience as the HTTP listener: a transient accept error
+        // must never take the supervisor channel down.
+        let (socket, peer) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                state
+                    .telemetry
+                    .builder()
+                    .level(telemetry::Level::Warn)
+                    .kind("supervisor.serve.accept_failed")
+                    .category("supervisor")
+                    .message(format!("accept failed ({e}); backing off, listener stays up"))
+                    .emit();
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
+        };
         let state = state.clone();
         tokio::spawn(async move {
             let peer_str = peer.to_string();
