@@ -201,21 +201,37 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
                         // In-VM supervisor fetch endpoints (binaries): no
                         // admin session exists inside the guest.
                         || path.starts_with("/api/supervisor");
-                    if is_api {
+                    // FD-LEAK FIX: idle HTTP keep-alive connections were never
+                    // closed server-side (CLOSE-WAIT pile-up: ~100 sockets/day
+                    // -> EMFILE). Every plain response now says
+                    // `Connection: close` so hyper closes the socket right
+                    // after responding — no idle accumulation possible.
+                    // 101 upgrades (WS tunnels) are excluded: closing those
+                    // would break live streams (they end on client goodbye).
+                    let mut res = if is_api {
                         if req.method() == hyper::Method::OPTIONS {
                             return Ok::<_, anyhow::Error>(json::cors_preflight());
                         }
                         if let Some(res) = route(&state, req).await {
-                            return Ok(json::with_cors(res));
+                            json::with_cors(res)
+                        } else {
+                            json::with_cors(json::not_found("unknown api route"))
                         }
-                        return Ok(json::with_cors(json::not_found("unknown api route")));
+                    } else {
+                        handler.handle(req).await.unwrap_or_else(|e| {
+                            json::json(
+                                hyper::StatusCode::INTERNAL_SERVER_ERROR,
+                                serde_json::json!({"error": e.to_string()}),
+                            )
+                        })
+                    };
+                    if res.status() != hyper::StatusCode::SWITCHING_PROTOCOLS {
+                        res.headers_mut().insert(
+                            hyper::header::CONNECTION,
+                            hyper::header::HeaderValue::from_static("close"),
+                        );
                     }
-                    Ok(handler.handle(req).await.unwrap_or_else(|e| {
-                        json::json(
-                            hyper::StatusCode::INTERNAL_SERVER_ERROR,
-                            serde_json::json!({"error": e.to_string()}),
-                        )
-                    }))
+                    Ok(res)
                 }
             });
             // with_upgrades() is REQUIRED for websocket tunneling: plain
