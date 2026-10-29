@@ -552,6 +552,31 @@ td .btn {
   border-left-color: var(--bad);
 }
 
+/* inline text link (flat): gold underline, no button chrome */
+.textlink {
+  color: var(--gold);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.textlink:hover {
+  color: var(--gold-soft);
+}
+
+/* small centered line under auth forms (e.g. "no account yet?") */
+.altline {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* "updated HH:MM:SS · refresh now" under the hero status */
+.lastcheck {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 /* status hero: glanceable row at the top of the tenant dashboard */
 .hero {
   display: flex;

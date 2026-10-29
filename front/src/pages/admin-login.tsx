@@ -1,5 +1,5 @@
 import React from "react";
-import { LogIn, KeyRound, Users, ShieldCheck } from "lucide-react";
+import { LogIn, KeyRound, ShieldCheck } from "lucide-react";
 import { api, saveAdminToken, clearAdminToken } from "../api";
 import { Page, Section, Field, Actions, Btn, Msg, PasswordInput, errMsg } from "../ui";
 import { route } from "../app";
@@ -54,8 +54,14 @@ export function AdminLoginPage() {
         </Field>
         <Actions>
           <Btn disabled={busy} onClick={login}><LogIn /> sign in</Btn>
-          <Btn onClick={() => route("#/login")}><Users /> tenant view</Btn>
         </Actions>
+        <Msg m={m} />
+        <p className="altline">
+          <span className="textlink" role="link" tabIndex={0} onClick={() => route("#/login")}
+            onKeyDown={(e) => e.key === "Enter" && route("#/login")}>
+            ← back to tenant sign in
+          </span>
+        </p>
       </Section>
 
       <Section title="first-run bootstrap">

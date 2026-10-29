@@ -3,7 +3,6 @@ import {
   api,
   saveTenantToken,
   clearTenantToken,
-  tenantToken,
   ApiError,
   statusClass,
 } from "../api";
@@ -12,13 +11,11 @@ import { route } from "../app";
 import {
   LogIn,
   UserPlus,
-  KeyRound,
   LogOut,
   Power,
-  ExternalLink,
+  Play,
   RefreshCw,
   Monitor,
-  Play,
 } from "lucide-react";
 
 function selfInfo(): any | null {
@@ -27,6 +24,21 @@ function selfInfo(): any | null {
   } catch {
     return null;
   }
+}
+
+/** Small inline link (flat, gold underline) — e.g. auth page switching. */
+function AltLink(props: { children: React.ReactNode; to: string }) {
+  return (
+    <span
+      className="textlink"
+      role="link"
+      tabIndex={0}
+      onClick={() => route(props.to)}
+      onKeyDown={(e) => e.key === "Enter" && route(props.to)}
+    >
+      {props.children}
+    </span>
+  );
 }
 
 export function LoginPage() {
@@ -57,18 +69,15 @@ export function LoginPage() {
           <input value={username} onChange={(e) => setU(e.target.value)} autoFocus />
         </Field>
         <Field label="password">
-          <PasswordInput
-            value={password}
-            onChange={setP}
-            onEnter={() => !busy && submit()}
-          />
+          <PasswordInput value={password} onChange={setP} onEnter={() => !busy && submit()} />
         </Field>
         <Actions>
           <Btn disabled={busy} onClick={submit}><LogIn /> sign in</Btn>
-          <Btn onClick={() => route("#/signup")}><UserPlus /> sign up instead</Btn>
-          <Btn className="gold" onClick={() => route("#/admin/login")}><KeyRound /> staff</Btn>
         </Actions>
         <Msg m={m} />
+        <p className="altline">
+          no account yet? <AltLink to="#/signup">create one</AltLink>
+        </p>
       </Section>
     </Page>
   );
@@ -109,7 +118,7 @@ export function SignupPage() {
 
   return (
     <Page title="CREATE ACCOUNT">
-      <Section title="new tenant" note="username 3+ chars, password 8+ chars">
+      <Section title="new account" note="username 3+ chars, password 8+ chars">
         <Field label="username"><input value={f.username} onChange={set("username")} autoFocus /></Field>
         <Field label="password">
           <PasswordInput value={f.password} onChange={(v) => setF({ ...f, password: v })} />
@@ -117,9 +126,11 @@ export function SignupPage() {
         <Field label="display name"><input value={f.display_name} onChange={set("display_name")} /></Field>
         <Actions>
           <Btn disabled={busy} onClick={submit}><UserPlus /> create account</Btn>
-          <Btn onClick={() => route("#/login")}><LogIn /> login instead</Btn>
         </Actions>
         <Msg m={m} />
+        <p className="altline">
+          already have an account? <AltLink to="#/login">sign in</AltLink>
+        </p>
       </Section>
     </Page>
   );
@@ -168,7 +179,7 @@ export function TenantHome() {
     setM(null);
     try {
       const r = await api.vmWake();
-      setM({ t: "ok", s: `machine is up at ${r.data.ip}` });
+      setM({ t: "ok", s: `machine is on at ${r.data.ip}` });
       load();
     } catch (e) {
       const d = e instanceof ApiError ? e.data : null;
@@ -187,6 +198,19 @@ export function TenantHome() {
   const appsUrl = me?.apps_url ?? localStorage.getItem("wrap.apps_url") ?? "";
   const vmSt = status?.status ?? me?.vm?.status ?? "unknown";
   const up = vmSt === "running";
+  const asleep = vmSt === "asleep" || vmSt === "sleeping";
+
+  const heroTitle = up
+    ? "your machine is on"
+    : asleep
+    ? "your machine is asleep"
+    : "your machine is off";
+
+  const heroNote = up
+    ? "everything is ready — open apps to start working."
+    : asleep
+    ? "it wakes up by itself the moment you use it, or press wake below."
+    : "press wake to turn it on (takes a few seconds).";
 
   return (
     <Page title="DASHBOARD" sub={self?.username ?? me?.tenant?.username ?? ""}>
@@ -194,28 +218,34 @@ export function TenantHome() {
       <div className="hero">
         <div className={"hero-dot " + statusClass(vmSt)} />
         <div className="hero-main">
-          <span className="hero-status">{vmSt}</span>
+          <span className="hero-status">{heroTitle}</span>
           <span className="muted">
-            {err
-              ? err
-              : up
-              ? `machine is live at ${status?.ip ?? me?.vm?.ip ?? "..."}. checked ${checkedAt}`
-              : "machine is parked. wake it below, first request also wakes it"}
+            {err ? err : heroNote}
           </span>
+          {checkedAt ? (
+            <span className="lastcheck">
+              updated {checkedAt} · <span className="textlink" onClick={load}>refresh now</span>
+            </span>
+          ) : null}
         </div>
         <div className="hero-actions">
-          <Btn disabled={waking || up} onClick={wake}><Power /> wake</Btn>
-          <Btn className={up ? "gold" : ""} disabled={!up} onClick={() => route("#/apps")}>
-            <Play /> open apps
-          </Btn>
-          <Btn onClick={load}><RefreshCw /> check now</Btn>
+          {up ? (
+            <Btn className="gold" disabled={!up} onClick={() => route("#/apps")}>
+              <Play /> open apps
+            </Btn>
+          ) : (
+            <Btn disabled={waking} onClick={wake}>
+              <Power /> {waking ? "waking…" : "wake machine"}
+            </Btn>
+          )}
+          <Btn onClick={load}><RefreshCw /> refresh</Btn>
         </div>
       </div>
 
       <Section title="machine" note={<><Monitor /> refreshes every 5s</>}>
         <RowLine
           items={[
-            ["state", <span className={statusClass(vmSt)}>{vmSt === "running" ? "on — ready to use" : vmSt === "asleep" ? "asleep — wakes on first use" : vmSt}</span>],
+            ["state", <span className={statusClass(vmSt)}>{heroTitle}</span>],
             ["address", <span className="mono">{status?.ip ?? me?.vm?.ip ?? "none yet"}</span>],
             ["power", <span className="muted">sleeps automatically when idle; nothing is lost — waking brings everything back</span>],
           ]}
@@ -236,7 +266,6 @@ export function TenantHome() {
         <Actions>
           <Btn className={undefined} onClick={() => route("#/apps")} disabled={!appsUrl}><Play /> run apps here</Btn>
           <Btn onClick={logout}><LogOut /> sign out</Btn>
-          <Btn className="gold" onClick={() => route("#/admin/login")}><KeyRound /> staff</Btn>
         </Actions>
       </Section>
     </Page>
