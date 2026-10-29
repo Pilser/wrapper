@@ -313,6 +313,53 @@ textarea::placeholder {
   color: var(--muted);
 }
 
+/* password field with eye toggle: wrapper hugs the input, button inside */
+.pwwrap {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.pwwrap input {
+  flex: 1;
+  min-width: 0;
+  border-right: none;
+}
+
+.pwwrap input:focus {
+  outline-offset: -2px;
+}
+
+.pweye {
+  appearance: none;
+  flex: none;
+  width: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg2);
+  border: 1px solid var(--line-strong);
+  border-left: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.pweye svg {
+  width: 16px;
+  height: 16px;
+}
+
+.pweye:hover {
+  color: var(--green);
+  background: var(--sel);
+}
+
+.pweye:active {
+  background: var(--bg2);
+  color: var(--fg);
+}
+
 select {
   appearance: none;
 }

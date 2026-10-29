@@ -7,7 +7,7 @@ import {
   ApiError,
   statusClass,
 } from "../api";
-import { Page, Section, Field, Actions, Btn, Msg, errMsg, RowLine } from "../ui";
+import { Page, Section, Field, Actions, Btn, Msg, PasswordInput, errMsg, RowLine } from "../ui";
 import { route } from "../app";
 import {
   LogIn,
@@ -57,8 +57,11 @@ export function LoginPage() {
           <input value={username} onChange={(e) => setU(e.target.value)} autoFocus />
         </Field>
         <Field label="password">
-          <input type="password" value={password} onChange={(e) => setP(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !busy && submit()} />
+          <PasswordInput
+            value={password}
+            onChange={setP}
+            onEnter={() => !busy && submit()}
+          />
         </Field>
         <Actions>
           <Btn disabled={busy} onClick={submit}><LogIn /> sign in</Btn>
@@ -86,7 +89,17 @@ export function SignupPage() {
         password: f.password,
         display_name: f.display_name || undefined,
       });
-      setM({ t: "ok", s: `account created: ${r.data.tenant?.username ?? f.username}, now log in` });
+      // Auto-login with the credentials just created — the user goes
+      // straight to their dashboard (login also pre-warms the VM).
+      try {
+        const lr = await api.login({ username: f.username, password: f.password });
+        saveTenantToken(lr.data.token, lr.data.tenant);
+        if (lr.data.apps_url) localStorage.setItem("wrap.apps_url", lr.data.apps_url);
+        route("#/");
+        return;
+      } catch {
+        setM({ t: "bad", s: `account created for ${r.data.tenant?.username ?? f.username}, but auto sign-in failed — please log in` });
+      }
     } catch (e) {
       setM({ t: "bad", s: errMsg(e) });
     } finally {
@@ -97,8 +110,10 @@ export function SignupPage() {
   return (
     <Page title="CREATE ACCOUNT">
       <Section title="new tenant" note="username 3+ chars, password 8+ chars">
-        <Field label="username"><input value={f.username} onChange={set("username")} /></Field>
-        <Field label="password"><input type="password" value={f.password} onChange={set("password")} /></Field>
+        <Field label="username"><input value={f.username} onChange={set("username")} autoFocus /></Field>
+        <Field label="password">
+          <PasswordInput value={f.password} onChange={(v) => setF({ ...f, password: v })} />
+        </Field>
         <Field label="display name"><input value={f.display_name} onChange={set("display_name")} /></Field>
         <Actions>
           <Btn disabled={busy} onClick={submit}><UserPlus /> create account</Btn>
@@ -197,12 +212,12 @@ export function TenantHome() {
         </div>
       </div>
 
-      <Section title="machine" note={<><Monitor /> live status every 5s</> as any}>
+      <Section title="machine" note={<><Monitor /> refreshes every 5s</>}>
         <RowLine
           items={[
-            ["status", <span className={statusClass(vmSt)}>{vmSt}</span>],
-            ["ip", status?.ip ?? me?.vm?.ip ?? "none"],
-            ["reboot", <span className="muted">not offered here: sleep is automatic on idle and wake restores your session. staff can stop or kill from the control panel.</span>],
+            ["state", <span className={statusClass(vmSt)}>{vmSt === "running" ? "on — ready to use" : vmSt === "asleep" ? "asleep — wakes on first use" : vmSt}</span>],
+            ["address", <span className="mono">{status?.ip ?? me?.vm?.ip ?? "none yet"}</span>],
+            ["power", <span className="muted">sleeps automatically when idle; nothing is lost — waking brings everything back</span>],
           ]}
         />
         <Msg m={m} />
@@ -211,11 +226,11 @@ export function TenantHome() {
       <Section title="account">
         <RowLine
           items={[
-            ["username", self?.username ?? me?.tenant?.username ?? "none"],
+            ["signed in as", self?.username ?? me?.tenant?.username ?? "none"],
             ["display name", self?.display_name ?? me?.tenant?.display_name ?? "none"],
-            ["created", self?.created_at ?? me?.tenant?.created_at ?? "none"],
+            ["member since", self?.created_at ?? me?.tenant?.created_at ?? "none"],
             ["last login", self?.last_login ?? me?.tenant?.last_login ?? "none"],
-            ["apps", appsUrl ? <a href={appsUrl} target="_blank" rel="noreferrer">{appsUrl}</a> : "none"],
+            ["apps link", appsUrl ? <a href={appsUrl} target="_blank" rel="noreferrer">{appsUrl}</a> : "none"],
           ]}
         />
         <Actions>

@@ -1,6 +1,7 @@
 import React from "react";
 import { api, wsUrl, fmtBytes, ago, statusClass } from "../api";
-import { Page, Section, Field, Actions, Btn, Msg, errMsg } from "../ui";
+import { Page, Section, Btn, errMsg } from "../ui";
+import { RefreshCw, Users } from "lucide-react";
 
 export function AdminDashboard() {
   const [tenants, setTenants] = React.useState<any[]>([]);
@@ -76,30 +77,27 @@ export function AdminDashboard() {
   }
 
   return (
-    <Page title="DASHBOARD" sub="fleet overview">
-      <Section title="target" note={wsState === "live" ? "live updates" : "refreshing periodically"}>
-        <Field label="tenant">
-          <select value={sel} onChange={(e) => { setSel(e.target.value); setSnaps([]); }}>
-            <option value="all">all (fleet)</option>
-            {tenants.map((t) => <option key={t.id} value={t.id}>{t.username}</option>)}
-          </select>
-        </Field>
-        <Actions>
-          <Btn onClick={() => { setWsState("off"); setSnaps([]); }}>reconnect ws</Btn>
-          <Btn onClick={restPoll}>force rest pull</Btn>
-        </Actions>
-        <p className="muted">
-          stream {wsState === "live" ? <span className="ok">live</span> : <span className="warn">{wsState}</span>}
-          {" · "}
-          {msgline(m)}
-        </p>
-      </Section>
-
+    <Page title="OVERVIEW" sub="fleet at a glance">
       {sel === "all" ? (
-        <Section title="fleet" note={`${snaps.length} tenants`}>
+        <Section
+          title="fleet"
+          note={
+            <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span className="muted">
+                stream: {wsState === "live" ? <span className="ok">live</span> : <span className="warn">{wsState === "connecting" ? "connecting" : "polling"}</span>}
+                {m ? <span className={m.t === "bad" ? "bad" : "ok"}> · {m.s}</span> : null}
+              </span>
+              <select value={sel} onChange={(e) => { setSel(e.target.value); setSnaps([]); }}>
+                <option value="all">all tenants</option>
+                {tenants.map((t) => <option key={t.id} value={t.id}>{t.username}</option>)}
+              </select>
+              <Btn className="bare" onClick={() => { setWsState("off"); setSnaps([]); }}><RefreshCw /> refresh</Btn>
+            </span>
+          }
+        >
           <table>
             <thead>
-              <tr><th>tenant</th><th>vm</th><th>ip</th><th>category</th><th>template</th><th>heartbeat</th><th>mem/cpu</th><th>disk</th></tr>
+              <tr><th>tenant</th><th>machine</th><th>address</th><th>category</th><th>size</th><th>last seen</th><th>mem · cpu</th><th>disk</th></tr>
             </thead>
             <tbody>
               {snaps.map((s) => (
@@ -108,7 +106,7 @@ export function AdminDashboard() {
                   <td className={statusClass(s.vm?.status)}>{s.vm?.status ?? "none"}</td>
                   <td className="mono">{s.vm?.ip ?? "none"}</td>
                   <td>{s.category?.name ?? "none"}</td>
-                  <td className="muted">{s.template ? `${s.template.name} (${s.template.vcpu_count}c/${s.template.memory_mb}m)` : "none"}</td>
+                  <td className="muted">{s.template ? `${s.template.vcpu_count}c/${s.template.memory_mb}m` : "none"}</td>
                   <td className="num">{ago(s.heartbeat_age_secs)}</td>
                   <td className="num"><Balloon b={s.balloon} /></td>
                   <td className="num">{fmtBytes(s.disk?.size_bytes)}</td>
@@ -118,18 +116,29 @@ export function AdminDashboard() {
           </table>
         </Section>
       ) : snaps.length ? (
-        <Section title={nameOf(sel)} note="machine view">
+        <Section
+          title={nameOf(sel)}
+          note={
+            <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span className="muted">
+                stream: {wsState === "live" ? <span className="ok">live</span> : <span className="warn">{wsState === "connecting" ? "connecting" : "polling"}</span>}
+              </span>
+              <Btn className="bare" onClick={() => { setSel("all"); setSnaps([]); }}><Users /> all tenants</Btn>
+              <Btn className="bare" onClick={restPoll}><RefreshCw /> refresh</Btn>
+            </span>
+          }
+        >
           {snaps[0] ? (
             <div>
               {[
-                ["vm status", String(snaps[0].vm?.status ?? "none")],
-                ["ip", snaps[0].vm?.ip ?? "none"],
-                ["tap", snaps[0].vm?.tap ?? "none"],
+                ["machine state", String(snaps[0].vm?.status ?? "none")],
+                ["address", snaps[0].vm?.ip ?? "none"],
+                ["network tap", snaps[0].vm?.tap ?? "none"],
                 ["category", snaps[0].category?.name ?? "none"],
                 ["template", snaps[0].template?.name ?? "none"],
-                ["vcpu/mem", snaps[0].template ? `${snaps[0].template.vcpu_count} / ${snaps[0].template.memory_mb} MB` : "none"],
-                ["heartbeat age", ago(snaps[0].heartbeat_age_secs)],
-                ["memory/cpu", scr(snaps[0].balloon)],
+                ["cores / memory", snaps[0].template ? `${snaps[0].template.vcpu_count} cores / ${snaps[0].template.memory_mb} MB` : "none"],
+                ["last seen", ago(snaps[0].heartbeat_age_secs)],
+                ["memory · cpu in use", scr(snaps[0].balloon)],
                 ["disk size", fmtBytes(snaps[0].disk?.size_bytes)],
               ].map(([k, v]) => (
                 <div className="rowline" key={k}><b>{k}</b><span>{v}</span></div>
@@ -140,10 +149,6 @@ export function AdminDashboard() {
       ) : null}
     </Page>
   );
-}
-
-function msgline(m: any) {
-  return m ? <span className={m.t === "bad" ? "bad" : "ok"}>{m.s}</span> : "";
 }
 
 function scr(b: any) {

@@ -1,7 +1,7 @@
 import React from "react";
 import { LogIn, KeyRound, Users, ShieldCheck } from "lucide-react";
 import { api, saveAdminToken, clearAdminToken } from "../api";
-import { Page, Section, Field, Actions, Btn, Msg, errMsg } from "../ui";
+import { Page, Section, Field, Actions, Btn, Msg, PasswordInput, errMsg } from "../ui";
 import { route } from "../app";
 
 export function AdminLoginPage() {
@@ -46,8 +46,11 @@ export function AdminLoginPage() {
       <Section title="staff login">
         <Field label="username"><input value={username} onChange={(e) => setU(e.target.value)} autoFocus /></Field>
         <Field label="password">
-          <input type="password" value={password} onChange={(e) => setP(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !busy && login()} />
+          <PasswordInput
+            value={password}
+            onChange={setP}
+            onEnter={() => !busy && login()}
+          />
         </Field>
         <Actions>
           <Btn disabled={busy} onClick={login}><LogIn /> sign in</Btn>
@@ -61,7 +64,9 @@ export function AdminLoginPage() {
         ) : (
           <>
             <Field label="username"><input value={bootU} onChange={(e) => setBU(e.target.value)} /></Field>
-            <Field label="password"><input type="password" value={bootP} onChange={(e) => setBP(e.target.value)} /></Field>
+            <Field label="password">
+              <PasswordInput value={bootP} onChange={setBP} />
+            </Field>
             <Actions><Btn disabled={busy} onClick={bootstrap}><ShieldCheck /> create first admin</Btn></Actions>
           </>
         )}
