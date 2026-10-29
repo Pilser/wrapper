@@ -10,6 +10,7 @@ use bytes::Bytes;
 use shared::{Error as WrapperError, Result};
 use http_body_util::{BodyExt, Full};
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use std::path::PathBuf;
 use telemetry::{Level, Telemetry};
 
 /// Shared upstream HTTP client (hyper 1 + hyper-util legacy, pooled).
@@ -32,6 +33,9 @@ pub struct HttpHandler {
     client: UpstreamClient,
     /// Optional activity map touched per forwarded request (idle reaper).
     activity: Option<crate::routing::ActivityMap>,
+    /// Host dir for shared static assets (`<binaries>/zw-assets`). Empty
+    /// disables local asset serving.
+    assets_root: PathBuf,
 }
 
 impl std::fmt::Debug for HttpHandler {
@@ -60,6 +64,7 @@ impl HttpHandler {
             response_transform: crate::transform::ResponseTransform::new(),
             client: upstream_client(),
             activity: None,
+            assets_root: PathBuf::new(),
             telemetry,
         }
     }
@@ -107,6 +112,12 @@ impl HttpHandler {
         self
     }
 
+    /// Serve shared static assets from this host dir (`<binaries>/zw-assets`).
+    pub fn with_assets_root(mut self, root: PathBuf) -> Self {
+        self.assets_root = root;
+        self
+    }
+
     pub async fn handle(
         &self,
         mut req: hyper::Request<hyper::body::Incoming>,
@@ -121,6 +132,25 @@ impl HttpHandler {
             .source("proxy::http::handler")
             .message(format!("HTTP request received {method} {path}"))
             .emit();
+
+        // Serve shared static assets locally (/_topcoat/assets/*, favicon)
+        // instead of treating them as tenant requests — those would hit the
+        // wake-default path and 500. 404 when the file is missing so we
+        // never try (and fail) to boot a tenant for an asset.
+        if crate::http::static_assets::is_asset_path(&path) {
+            let resp = if self.assets_root.as_os_str().is_empty() {
+                None
+            } else {
+                crate::http::static_assets::serve(&self.assets_root, &path).await?
+            };
+            return Ok(match resp {
+                Some(r) => r,
+                None => crate::http::body::full_response(
+                    hyper::StatusCode::NOT_FOUND,
+                    bytes::Bytes::from_static(b"not found"),
+                ),
+            });
+        }
 
         if let Err(err) = self.middleware.run(&req).await {
             self.telemetry

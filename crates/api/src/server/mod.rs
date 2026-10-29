@@ -136,7 +136,10 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
     };
     let activity = p.activity.clone();
     let handler = proxy::HttpHandler::new(p.telemetry.clone(), runtime.clone())
-        .with_activity(activity.clone());
+        .with_activity(activity.clone())
+        .with_assets_root(
+            std::path::PathBuf::from(&p.binaries_dir).join("zw-assets"),
+        );
     // Bundled web UI: when the dist folder exists, GET / and asset paths
     // are served locally; everything else keeps proxying to tenant zw.
     let front = front::Front::load(&p.front_dist);

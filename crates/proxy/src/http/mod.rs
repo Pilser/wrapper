@@ -3,6 +3,7 @@
 pub mod body;
 pub mod handler;
 pub mod multipart;
+pub mod static_assets;
 pub mod streaming;
 
 pub use body::{full_response, read_body, text_response};
