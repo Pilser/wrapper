@@ -34,6 +34,12 @@ storage_path = "data/deployments"
 # Default TCP port supervisors listen on for deployment pushes.
 default_push_port = 8091
 
+[front]
+# Bundled web UI: the front/ folder in this repo, built with `bun run build`.
+# When the folder holds an index.html, the public listener serves it at /
+# and /assets/*; every other path still proxies to the tenant's zw.
+dist = "front/dist"
+
 [telemetry]
 enabled = true
 output = "both"

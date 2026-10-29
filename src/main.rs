@@ -384,6 +384,7 @@ async fn async_main() -> anyhow::Result<()> {
         binaries_dir: cfg.binaries.dir.clone(),
         system_prompt_host_path: cfg.vm.system_prompt_host_path.clone(),
         idle_timeout_minutes: cfg.vm.idle_timeout_minutes,
+        front_dist: cfg.front.dist.clone(),
     };
     let serve_telemetry = telemetry.clone();
     let serve_task = tokio::spawn(async move {

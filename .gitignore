@@ -35,6 +35,13 @@
 # --- Always ignore build artifacts ---
 **/target/
 
+# Track the bundled web UI (source + built dist served by the wrapper)
+!front/
+!front/**
+
+# front build deps + caches are never tracked
+front/node_modules/
+
 # --- OS / editor noise ---
 **/.DS_Store
 **/Thumbs.db

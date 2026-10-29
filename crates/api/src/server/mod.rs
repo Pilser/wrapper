@@ -14,6 +14,7 @@ pub mod admin;
 pub mod auth_ctx;
 pub mod idle;
 pub mod json;
+pub mod front;
 pub mod stream;
 pub mod user;
 
@@ -84,6 +85,8 @@ pub struct ServeParams {
     pub idle_timeout_minutes: u64,
     /// Absolute host dir with telemetry daily JSON files (config `[telemetry.disk]`).
     pub telemetry_dir: String,
+    /// Built web UI folder (config `[front]`); served when it has index.html.
+    pub front_dist: String,
 }
 
 /// Serve forever: one hyper listener, `/api/*` routed locally, everything
@@ -134,6 +137,35 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
     let activity = p.activity.clone();
     let handler = proxy::HttpHandler::new(p.telemetry.clone(), runtime.clone())
         .with_activity(activity.clone());
+    // Bundled web UI: when the dist folder exists, GET / and asset paths
+    // are served locally; everything else keeps proxying to tenant zw.
+    let front = front::Front::load(&p.front_dist);
+    match &front {
+        Some(f) if !f.is_empty() => p.telemetry
+            .builder()
+            .level(telemetry::Level::Info)
+            .kind("api.front.serving")
+            .category("api")
+            .message(format!("front serving {} asset(s) from {}", f.len(), p.front_dist))
+            .emit(),
+        Some(_) => p.telemetry
+            .builder()
+            .level(telemetry::Level::Warn)
+            .kind("api.front.empty")
+            .category("api")
+            .message(format!(
+                "front dist at {} has index.html but no assets; run `bun run build` in front/",
+                p.front_dist
+            ))
+            .emit(),
+        None => p.telemetry
+            .builder()
+            .level(telemetry::Level::Info)
+            .kind("api.front.absent")
+            .category("api")
+            .message(format!("no front dist at {} (paths proxy to zw)", p.front_dist))
+            .emit(),
+    };
     let state = AppState {
         gdb: p.gdb,
         telemetry: p.telemetry.clone(),
@@ -181,10 +213,13 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
         };
         let state = state.clone();
         let handler = handler.clone();
+        let front = front.clone();
         tokio::spawn(async move {
             let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let state = state.clone();
                 let handler = handler.clone();
+                // one cheap Arc-style clone per request (asset map is shared)
+                let front = front.clone();
                 async move {
                     // Peek before moving: the wrapper's OWN /api namespaces
                     // are served locally; everything else — including zw's
@@ -201,6 +236,30 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
                         // In-VM supervisor fetch endpoints (binaries): no
                         // admin session exists inside the guest.
                         || path.starts_with("/api/supervisor");
+                    // Bundled front first: GET / and exact asset paths are
+                    // served locally (hash routing, no fallback needed).
+                    // NEVER intercept: non-GET/HEAD (uploads, form posts),
+                    // websocket upgrades (SSE/WS must stream through the
+                    // proxy untouched), anything under /api/*, and paths
+                    // that don't exist in the dist map (tenant zw routes,
+                    // downloads — all still proxy).
+                    let front_hit = match (&front, req.method()) {
+                        (Some(f), m)
+                            if (m == hyper::Method::GET || m == hyper::Method::HEAD)
+                                && !req
+                                    .headers()
+                                    .get(hyper::header::UPGRADE)
+                                    .map(|v| {
+                                        v.to_str()
+                                            .map(|s| s.eq_ignore_ascii_case("websocket"))
+                                            .unwrap_or(false)
+                                    })
+                                    .unwrap_or(false) =>
+                        {
+                            f.respond(&path)
+                        }
+                        _ => None,
+                    };
                     // FD-LEAK FIX: idle HTTP keep-alive connections were never
                     // closed server-side (CLOSE-WAIT pile-up: ~100 sockets/day
                     // -> EMFILE). Every plain response now says
@@ -217,6 +276,8 @@ pub async fn serve(addr: &str, p: ServeParams) -> anyhow::Result<()> {
                         } else {
                             json::with_cors(json::not_found("unknown api route"))
                         }
+                    } else if let Some(res) = front_hit {
+                        res
                     } else {
                         handler.handle(req).await.unwrap_or_else(|e| {
                             json::json(

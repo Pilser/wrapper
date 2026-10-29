@@ -34,6 +34,8 @@ pub struct Config {
     #[serde(default)]
     pub api: ApiSection,
     #[serde(default)]
+    pub front: FrontSection,
+    #[serde(default)]
     pub telemetry: TelemetrySection,
 }
 
@@ -51,6 +53,7 @@ impl Default for Config {
             binaries: BinariesSection::default(),
             vm: VmSection::default(),
             api: ApiSection::default(),
+            front: FrontSection::default(),
             telemetry: TelemetrySection::default(),
         }
     }
@@ -265,6 +268,27 @@ impl Default for ApiSection {
             public_base: default_public_base(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrontSection {
+    /// Built web UI folder (this repo's `front/`, `bun run build`). When the
+    /// folder exists and holds an `index.html`, the public listener serves it
+    /// at `/` and `/assets/*`; every other path still proxies to tenant zw.
+    #[serde(default = "default_front_dist")]
+    pub dist: String,
+}
+
+impl Default for FrontSection {
+    fn default() -> Self {
+        Self {
+            dist: default_front_dist(),
+        }
+    }
+}
+
+fn default_front_dist() -> String {
+    "front/dist".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

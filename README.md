@@ -42,6 +42,13 @@ database → the response flows back to the student.
 - **Async runtime:** Tokio
 - **Serialization:** serde / serde_json
 
+## Web UI
+
+The bundled frontend lives in [`front/`](front/README.md) (React + TS, built
+with Bun). The wrapper serves `front/dist` at `/` per the `[front]` section
+of `config.toml`; see that README for the full wiring, proxy guarantees and
+the production runbook.
+
 ## Workspace structure
 
 Each crate is small and focused, matching the planned folder layout so no single
